@@ -1,0 +1,68 @@
+---
+title: Taylor Shellfish 2025 temperature data 
+author: "AS Huffmyer"
+date: '2025'
+output:
+  github_document: null
+  md_document: default
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 6
+    toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+
+This script analyzes temperature measurements during resazurin assays.     
+
+# Set up 
+
+Set up workspace, set options, and load required packages.    
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+Load libraries. 
+```{r}
+library(MASS) 
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(cowplot)
+library(lme4)
+library(lmerTest)
+library(car)
+library(effects)
+library(emmeans)
+library(tools)
+```
+
+# Load and plot data 
+
+```{r}
+temps<-read_excel(path="taylor-shellfish-sept2025/data/temperature/temperature.xlsx")%>%mutate(date=as.character(date))
+
+temp_plot<-temps%>%
+  ggplot(aes(x=timepoint, y=temperature))+
+  geom_point()+
+  geom_smooth(aes(group=1), colour="black")+
+  theme_classic()+
+  geom_vline(xintercept=3.5, linetype="dashed")+
+  ylab("Water Temperature (°C)")+
+  xlab("Time Point");temp_plot
+
+ggsave(temp_plot, filename="taylor-shellfish-sept2025/figures/temperature_plot_wells.png", width=4, height=4)
+```
+
+Calculate averages
+
+```{r}
+temps%>%
+  group_by(timepoint)%>%
+  summarise(mean=mean(temperature), se=sd(temperature)/sqrt(length(temperature)))
+```
+
+
+
+

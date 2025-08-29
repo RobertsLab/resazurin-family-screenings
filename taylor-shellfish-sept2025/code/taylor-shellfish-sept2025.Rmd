@@ -1,0 +1,1266 @@
+---
+title: Taylor Shellfish Sept 2025 resazurin family screening  
+author: "AS Huffmyer"
+date: '2025'
+output:
+  github_document: null
+  md_document: default
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 6
+    toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+
+This script analyzes resazurin assays on Taylor Shellfish seed.  
+
+# Set up 
+
+Set up workspace, set options, and load required packages.    
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+Load libraries. 
+```{r}
+library(MASS) 
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(cowplot)
+library(lme4)
+library(lmerTest)
+library(car)
+library(effects)
+library(emmeans)
+library(tools)
+library(pracma)
+library(rptR)
+library(fda)
+library(nls2)
+library(purrr)
+library(broom)
+library(pheatmap)
+library(vegan)
+library(ggridges)
+library(ggpubr)
+library(broom.mixed)
+```
+
+# Resazurin Trials   
+## Load data 
+
+```{r}
+# Set the folder path
+folder_path <- "data/plate-files/"  
+
+# List all txt files in the folder
+file_list <- list.files(path = folder_path, pattern = "\\.xlsx$", full.names = TRUE, recursive=TRUE)
+
+file_list <- file_list[!grepl("20250630", file_list)]
+
+# Check if any files are found
+if (length(file_list) == 0) {
+  stop("No xlsx files found in the specified folder. Check the folder path or file extension.")
+}
+
+# Initialize an empty list to store processed data
+data_list <- list()
+
+# Loop through each file and load the data
+for (file in file_list) {
+  # Ensure file is a character string
+  if (!is.character(file)) next
+  
+  # Extract file name without extension
+  file_name <- file_path_sans_ext(basename(file))
+  
+  # Read Excel file, skipping the first 9 rows
+  data <- read_excel(file, skip = 10, col_names = FALSE)
+
+  # Keep only the first 16 rows (row 1–16 after - skip)
+  data <- data[1:4, ]
+  
+  # Assign column names: first column is row labels (A–H), others are 1–12
+  colnames(data) <- c("Row", as.character(1:13))
+  
+  #remove first column
+  #data<-data%>%select(!"Row")
+  
+  # Convert to long format
+  data_long <- data %>%
+    pivot_longer(cols = -Row, names_to = "Column", values_to = "Value") %>%
+    mutate(
+      Column = sprintf("%02d", as.integer(Column)),  # Ensure two-digit column numbers
+      Well_ID = paste0(Row, Column),                # Format well ID as "A01", "B02", etc.
+      FileName = file_name,                          # Add file name
+      plate = str_extract(file_name, "plate\\d+"),  # Extract "plateX"
+      date = str_extract(file_name, "^\\d{8}"),     # Extract 8-digit date
+      timepoint = str_extract(file_name, "T\\d+") %>% 
+        str_remove("T") %>% 
+        as.numeric()                                # Convert timepoint to numeric
+    ) %>%
+    select(FileName, Well_ID, Value, date, plate, timepoint)  # Select relevant columns
+  
+  # Store the processed data in the list
+  data_list[[file_name]] <- data_long
+}
+
+# Print an example of processed data
+head(data_list[[file_name]])
+
+
+# Combine all data frames into a single data frame (optional)
+combined_data <- bind_rows(data_list, .id = "Source")
+
+# Print the first few rows of the combined data (optional)
+head(combined_data)
+
+# Rename columns
+combined_data<-combined_data%>%
+  rename("well"=Well_ID, resazurin_counts=`Value`)%>%
+  mutate(timepoint=as.character(timepoint))
+
+head(combined_data)
+```
+
+Load in metadata. 
+
+```{r}
+metadata<-read_xlsx(path="data/trial_metadata.xlsx")%>%
+  mutate(date=as.character(date))
+```
+
+Join with data frame and remove any wells that did not have samples. 
+
+```{r}
+str(combined_data)
+str(metadata)
+
+full_data<-left_join(combined_data, metadata, by=c("date", "well", "plate"))%>%
+  filter(!is.na(type))
+
+head(full_data)
+```
+
+Load in size data. 
+
+```{r}
+size<-read_xlsx("data/size/trial_size.xlsx")%>%
+  mutate(date=as.character(date))
+```
+
+Join with data. 
+
+```{r}
+str(full_data)
+str(size)
+
+full_data<-left_join(full_data, size, by=c("date", "plate", "well"))
+head(full_data)
+
+full_data<-full_data%>%
+  select(!Source)%>%
+  select(!FileName)%>%
+  select(!notes)
+
+head(full_data)
+```
+
+## Prep the data 
+
+Plot the raw data. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=resazurin_counts, colour=family, group=interaction(date, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Calculate size normalized fluorescence at each time point normalized to the starting value at time 0. 
+```{r}
+full_data<-full_data%>%
+  group_by(date, plate, well, family)%>%
+  arrange(date, plate, well)%>%
+  mutate(fluorescence.norm=resazurin_counts/first(resazurin_counts))
+```
+
+Plot again. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.norm, colour=family, group=interaction(date, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+View blanks
+
+```{r}
+full_data%>%
+  filter(type=="blank")%>%
+  ggplot(aes(x=timepoint, y=fluorescence.norm, colour = temperature, group=interaction(date, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Calculate mean change in blank at each time point. 
+
+```{r}
+blanks<-full_data%>%
+  filter(type=="blank")%>%
+  group_by(date, plate, timepoint)%>%
+  summarise(mean_blank=mean(fluorescence.norm));blanks
+```
+
+View summarized blank data. 
+
+```{r}
+blanks%>%
+  ggplot(aes(x=timepoint, y=mean_blank))+
+  facet_wrap(~date*plate)+
+  geom_point()+
+  theme_classic()
+```
+
+Subtract blank values from fluorescence values for oysters. 
+
+```{r}
+full_data<-left_join(full_data, blanks)
+
+full_data<-full_data%>%
+  filter(!type=="blank")%>%
+  mutate(fluorescence.corr=fluorescence.norm-mean_blank)
+```
+
+Plot again. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr, colour=family, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr, colour=length.mm, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  scale_colour_gradient(low="darkblue", high="red")+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Size normalize data.
+```{r}
+#normalize by length
+full_data<-full_data%>%
+  mutate(fluorescence.corr.mm=fluorescence.corr/length.mm)
+```
+
+Plot again. 
+
+Plot by area normalized. 
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr.mm, colour=family, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Plot by area normalized colored by size. 
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr.mm, colour=length.mm, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  scale_colour_gradient(low="darkblue", high="red")+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Remove unnecessary columns. 
+
+```{r}
+str(full_data)
+
+full_data<-full_data%>%
+  #select(!resazurin_counts)%>%
+  select(!type)%>%
+  select(!mean_blank)
+  #select(!length.mm)%>%
+  #select(!fluorescence.corr)%>%
+  #select(!fluorescence.norm)
+
+str(full_data)
+
+full_data<-full_data%>%
+  rename(value=fluorescence.corr.mm)
+```
+
+### Remove oversaturated samples
+
+Remove any sample that reached > 3000 raw value at any point during the trials, these were over saturated and data is unreliable. 
+
+```{r}
+full_data%>%
+  filter(resazurin_counts>3000)%>%
+  group_by(date, plate, well)%>%
+  mutate(unique=paste(date, plate, well))
+
+#there are 150 samples that went above the threshold 
+
+list<-full_data%>%
+  filter(resazurin_counts>3000)%>%
+  group_by(date, plate, well)%>%
+  mutate(unique=paste(date, plate, well))%>%
+  pull(unique)%>%
+  unique()
+```
+
+Remove the samples that exceeded the threshold of 3000 sometime during the trial. 
+
+```{r}
+full_data<-full_data%>%
+  mutate(unique=paste(date, plate, well))%>%
+  filter(!unique %in% list)
+```
+
+Ideal size range is in the middle range of what we used for these trials (~ >10mm and less that 18mm) 
+```{r}
+hist(full_data$length.mm)
+range(full_data$length.mm)
+```
+
+## Separate testing and experimental plates 
+
+Remove plates A and B from the data file and into their own data set to examine separately. 
+
+```{r}
+test_data<-full_data%>%
+  filter(family %in% c("90"))
+
+full_data<-full_data%>%
+  filter(!plate %in% c("plate71", "plate72"))
+```
+
+View the test data plates. Plate A/71 was run at 4°C and plate B/72 was run at 21°C. 
+```{r}
+plot0<-test_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=temperature, group=interaction(date, family, plate, well)))+
+  geom_point()+
+  scale_colour_manual(labels=c("21-22°C", "35°C", "12-17°C"), values=c("orange", "darkred", "blue3"))+
+  geom_line()+
+  theme_classic();plot0
+```
+
+## Models and Plots - by family 
+
+Set order of families for analysis. 
+
+```{r}
+levels_list<-c(2, 5, 6, 7, 12, 14, 15, 16, 19, 20, 21, 24, 25, 26, 31, 32, 33, 34, 36, 37, 38, 39, 41, 42, 43, 47, 48, 49, 50, 51, 54, 55, 57, 60, 61, 70, 71, 72, 74, 76, 77, 78, 79, 80, 82, 83, 84, 85, 88, 90)
+
+full_data<-full_data%>%
+  mutate(family=factor(family, levels=levels_list))
+```
+
+Plot individual data. 
+```{r}
+plot1<-full_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(date, family, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  geom_vline(xintercept = 3.5, linetype="dashed")+
+  theme_classic();plot1
+
+ggsave(plot1, filename="figures/trials/individual_trajectories.png", width=10, height=8, units="in")
+```
+
+Run a model on metabolic rates. 
+
+```{r}
+model<-full_data%>%
+  lmer((value)^(1/3) ~ family * timepoint + (1|well:plate:date) + (1|plate) + (1|date), data=.)
+
+anova(model)
+summary(model)
+qqPlot(residuals(model))
+leveneTest((value)^(1/3) ~ family * timepoint, data=full_data)
+```
+
+Plot raw data for each family. 
+
+```{r}
+plot2<-full_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(date, family, temperature)))+
+  facet_wrap(~family)+
+  geom_smooth(stat="smooth")+
+  geom_vline(xintercept = 3.5, linetype="dashed")+
+  theme_classic();plot2
+
+ggsave(plot2, filename="figures/trials/family_trajectories_date.png", width=12, height=12, units="in")
+
+plot2b<-full_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=phenotype, group=interaction(date, family, temperature)))+
+  stat_smooth(geom="smooth", method="loess", se=FALSE)+
+  geom_vline(xintercept = 3.5, linetype="dashed")+
+  theme_classic();plot2b
+
+plot2c<-full_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(family, temperature)))+
+  facet_wrap(~family)+
+  geom_smooth(stat="smooth")+
+  geom_vline(xintercept = 3.5, linetype="dashed")+
+  theme_classic();plot2c
+
+ggsave(plot2c, filename="figures/trials/family_trajectories.png", width=13, height=12, units="in")
+
+plot2d<-full_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(family, temperature)))+
+  geom_smooth(stat="smooth", method="loess", se=FALSE)+
+  geom_vline(xintercept = 3.5, linetype="dashed")+
+  theme_classic();plot2d
+
+ggsave(plot2d, filename="figures/trials/family_trajectories2.png", width=8, height=8, units="in")
+```
+
+Plot model estimates for metabolic rates for each family. 
+
+```{r}
+#predict data 
+pred_data <- augment(model, full_data) %>%
+  mutate(predicted_value_family = (.fitted)^3)  # back-transform to original scale
+
+#plot
+plot2e<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color = family, group = family, fill = family)) +
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(
+    fun.data = mean_se,
+    geom = "ribbon",
+    alpha = 0.2,
+    color = NA
+  ) +
+  labs(
+    title = "A",
+    x = "Hours",
+    y = expression(paste("Fold Change in Fluorescence (mm" ^-1, ")"))
+  ) +
+  theme_classic() +
+  theme(legend.position="none")+
+  guides(fill = "none");plot2e  
+
+ggsave(plot2e, filename="figures/trials/family_model_predictions.png", width=5, height=5, units="in")
+
+plot2f<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color = family, group = family, fill = family)) +
+  facet_wrap(~family, nrow=10, ncol=5)+
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(
+    fun.data = mean_se,
+    geom = "ribbon",
+    alpha = 0.2,
+    color = NA
+  ) +
+  labs(
+    title = "Model Predicted Metabolic Rate",
+    x = "Timepoint",
+    y = "Fluorescence"
+  ) +
+  theme_classic() +
+  guides(fill = "none");plot2f 
+
+ggsave(plot2f, filename="figures/trials/family_model_predictions_panel.png", width=12, height=10, units="in")
+```
+
+## Models and Plots - by phenotype 
+
+Plot raw data. 
+```{r}
+plot1a<-full_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=phenotype, group=interaction(date, phenotype, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  geom_vline(xintercept = 3.5, linetype="dashed")+
+  theme_classic();plot1a
+```
+
+Run a model on metabolic rates. 
+
+```{r}
+model<-full_data%>%
+  lmer((value)^(1/3) ~ timepoint * phenotype + (1|well:plate:date) + (1|plate) + (1|date) + (1|family), data=.)
+
+anova(model)
+summary(model)
+qqPlot(residuals(model))
+```
+
+Plot as a model for each phenotype. 
+
+```{r}
+plot2a<-full_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=phenotype, group=interaction(date, phenotype)))+
+  stat_smooth(geom="smooth", method="loess")+
+  geom_vline(xintercept = 3.5, linetype="dashed")+
+  theme_classic();plot2a
+
+plot2b<-full_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=phenotype, group=interaction(phenotype)))+
+  stat_smooth(geom="smooth", method="loess")+
+  geom_vline(xintercept = 3.5, linetype="dashed")+
+  theme_classic();plot2b
+
+ggsave(plot2b, filename="figures/trials/phenotype_trajectories.png", width=8, height=8, units="in")
+```
+
+Plot model estimates for metabolic rates for each family. 
+
+```{r}
+#predict data 
+pred_data <- augment(model, full_data) %>%
+  mutate(predicted_value_phenotype = (.fitted)^3)  # back-transform to original scale
+
+#plot
+plot3e<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_phenotype, color = phenotype, group = phenotype, fill = phenotype)) +
+  scale_fill_manual(values=c("darkorange", "purple2"), name="")+
+  scale_colour_manual(values=c("darkorange", "purple2"), name="")+
+  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(
+    fun.data = mean_se,
+    geom = "ribbon",
+    alpha = 0.2,
+    color = NA
+  ) +
+  labs(
+    title = "B",
+    x = "Hours",
+    y = expression(paste("Fold Change in Fluorescence (mm" ^-1, ")"))
+  ) +
+  theme_classic() +
+  guides(fill = "none");plot3e  
+
+ggsave(plot3e, filename="figures/trials/phenotype_model_predictions.png", width=5, height=5, units="in")
+```
+
+## Calculate change in fluorescence between each timepoint 
+
+Convert to wide format and calculate percent change in fluorescence.    
+
+```{r}
+data_wide <- full_data %>%
+  select(date, plate, well, family, timepoint, phenotype, value)%>%
+  pivot_wider(names_from = timepoint, values_from = value)
+
+deltas <- data_wide %>%
+  mutate(
+    delta_T0_T1 = (`1` - `0`),
+    delta_T1_T2 = (`2` - `1`)/`1`,
+    delta_T2_T3 = (`3` - `2`)/`2`,
+    delta_T3_T4 = (`4` - `3`)/`3`
+  )
+```
+
+Convert back to long format. 
+
+```{r}
+deltas_long<-deltas%>%
+  pivot_longer(names_to = "delta", values_to = "change", cols=c(delta_T0_T1:delta_T3_T4))
+```
+
+```{r}
+hist(deltas_long$change)
+```
+
+Remove high and low value outliers
+```{r}
+deltas_long<-deltas_long%>%
+  filter(change>-20 & change <40)
+
+hist(deltas_long$change)
+```
+
+Plot deltas for each family. 
+
+Plot all together 
+```{r}
+plot4<-deltas_long%>%
+  ggplot(aes(x=delta, y=change, colour=family))+
+  facet_wrap(~date)+
+  geom_violin()+
+  theme_classic();plot4
+
+plot4a<-deltas_long%>%
+  ggplot(aes(x=delta, y=change, colour=phenotype))+
+  facet_wrap(~date)+
+  geom_violin()+
+  theme_classic();plot4a
+```
+
+T0-T1 
+
+```{r}
+plot5<-deltas%>%
+  ggplot(aes(x=family, y=delta_T0_T1, colour=family, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot5
+
+plot5a<-deltas%>%
+  ggplot(aes(x=phenotype, y=delta_T0_T1, colour=phenotype, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot5a
+```
+
+T1-T2 
+
+```{r}
+plot6<-deltas%>%
+  filter(delta_T1_T2>-10 & delta_T1_T2 <40)%>%
+  ggplot(aes(x=family, y=delta_T1_T2, colour=family, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot6
+
+plot6a<-deltas%>%
+  filter(delta_T1_T2>-10 & delta_T1_T2 <40)%>%
+  ggplot(aes(x=phenotype, y=delta_T1_T2, colour=phenotype, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot6a
+```
+
+T2-T3 
+
+```{r}
+plot6<-deltas%>%
+  filter(delta_T2_T3>-10 & delta_T2_T3 <40)%>%
+  ggplot(aes(x=family, y=delta_T2_T3, colour=family, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot6
+
+plot6a<-deltas%>%
+  filter(delta_T2_T3>-10 & delta_T2_T3 <40)%>%
+  ggplot(aes(x=phenotype, y=delta_T2_T3, colour=phenotype, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot6a
+```
+
+T3-T4 
+
+```{r}
+plot7<-deltas%>%
+  filter(delta_T3_T4>-10 & delta_T3_T4 <40)%>%
+  ggplot(aes(x=family, y=delta_T3_T4, colour=family, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot7
+
+plot7a<-deltas%>%
+  filter(delta_T3_T4>-10 & delta_T3_T4 <40)%>%
+  ggplot(aes(x=phenotype, y=delta_T3_T4, colour=phenotype, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot7a
+
+plot7b<-deltas%>%
+  filter(delta_T3_T4>-10 & delta_T3_T4 <40)%>%
+  ggplot(aes(x=phenotype, y=delta_T3_T4, colour=phenotype, group=interaction(phenotype)))+
+  geom_violin()+
+  theme_classic();plot7b
+```
+
+Calculate the difference between T0-1 and T3-4 values 
+
+```{r}
+difference<-deltas%>%
+  mutate(baseline=delta_T3_T4, acute=delta_T0_T1)%>%
+  mutate(difference=acute-baseline)
+
+hist(difference$difference)
+
+plot7d<-difference%>%
+  ggplot(aes(x=phenotype, y=difference, colour=phenotype, group=interaction(family)))+
+  geom_violin()+
+  theme_classic();plot7d
+
+plot7e<-difference%>%
+  ggplot(aes(x=phenotype, y=difference, colour=phenotype, group=interaction(phenotype)))+
+  geom_violin()+
+  geom_point(position=position_jitterdodge())+
+  theme_classic();plot7e
+```
+
+## Calculate total change in fluorescence over the entire trial
+
+Total fluorescence over the course of the trial is equivalent to the value at TP4 (all values start at 0).  
+```{r}
+end<-full_data%>%
+  filter(timepoint=="4")
+```
+
+Plot total by family and phenotype. 
+
+```{r}
+plot9<-end%>%
+  ggplot(aes(x=phenotype, y=value, colour=phenotype, group=interaction(date, family, temperature)))+
+  facet_wrap(~date)+
+  geom_violin()+
+  theme_classic();plot9
+
+ggsave(plot9, filename="figures/trials/total_values_family_date.png", width=10, height=8, units="in")
+
+plot9b<-end%>%
+  ggplot(aes(x=phenotype, y=value, colour=phenotype, group=interaction(family, temperature)))+
+  geom_violin()+
+  theme_classic();plot9b
+
+ggsave(plot9b, filename="figures/trials/total_values_family.png", width=10, height=8, units="in")
+
+plot9a<-end%>%
+  ggplot(aes(x=phenotype, y=value, colour=phenotype))+
+  geom_violin(aes(fill=NULL))+
+  geom_point(position=position_jitterdodge())+
+  theme_classic();plot9a
+
+ggsave(plot9a, filename="figures/trials/total_values_phenotype.png", width=10, height=8, units="in")
+```
+
+```{r}
+model<-end%>%
+  lmer((value)^(1/3) ~ family + (1|plate:date) + (1|date), data=.)
+
+anova(model)
+summary(model)
+qqPlot(residuals(model))
+
+model<-end%>%
+  lmer((value)^(1/3) ~ phenotype + (1|plate:date) + (1|date), data=.)
+
+anova(model)
+summary(model)
+qqPlot(residuals(model))
+```
+
+Add model prediction plots here.  
+
+## Area under the curve 
+
+Area under the curve (AUC): Summarizes total metabolic activity per oyster.
+
+```{r}
+aucs <- full_data %>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, plate, well, family, phenotype) %>%
+  summarise(AUC = trapz(time, value))
+```
+
+```{r}
+plot10<-ggplot(aucs, aes(x = family, y = AUC, colour = phenotype)) +
+  geom_violin(trim = FALSE) +
+  geom_jitter(width = 0.1, alpha = 0.3) +
+  labs(title = "AUC by Family", x = "Family", y = "AUC") +
+  theme_classic();plot10
+
+plot10a<-aucs%>%
+  group_by(family, phenotype)%>%
+  summarise(mean=mean(AUC, na.rm=TRUE), se=(sd(AUC, na.rm=TRUE))/sqrt(length(AUC)))%>%
+  
+  ggplot(aes(x = reorder(family, mean), y = mean, colour = phenotype)) +
+  geom_point()+
+  scale_fill_manual(values=c("darkorange", "purple2"), name="")+
+  scale_colour_manual(values=c("darkorange", "purple2"), name="")+
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se))+
+  labs(title = "C", x = "Family", y = "AUC") +
+  theme_classic();plot10a
+
+ggsave(plot10a, filename="figures/trials/auc_family.png", width=10, height=5, units="in")
+
+plot10a<-ggplot(aucs, aes(x = phenotype, y = AUC, colour = phenotype)) +
+  geom_violin(trim = FALSE) +
+  geom_jitter(width = 0.1, alpha = 0.3) +
+  labs(title = "AUC by Phenotype", x = "Family", y = "AUC") +
+  theme_classic(); plot10a
+
+plot10b<-aucs%>%
+  group_by(phenotype)%>%
+  summarise(mean=mean(AUC, na.rm=TRUE), se=(sd(AUC, na.rm=TRUE))/sqrt(length(AUC)))%>%
+  
+  ggplot(aes(x = reorder(phenotype, mean), y = mean, colour = phenotype)) +
+  geom_point()+
+  scale_fill_manual(values=c("darkorange", "purple2"), name="")+
+  scale_colour_manual(values=c("darkorange", "purple2"), name="")+
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), width=0.1)+
+  labs(title = "D", x = "Phenotype", y = "AUC") +
+  ylim(6, 10)+
+  theme_classic()+
+  theme(legend.position="none");plot10b
+
+ggsave(plot10b, filename="figures/trials/auc_phenotype.png", width=3, height=5, units="in")
+```
+
+Model the data. 
+
+```{r}
+model<-lmer(sqrt(AUC) ~ family + (1|plate) + (1|date), data=aucs)
+
+anova(model)
+qqPlot(residuals(model))
+```
+
+
+```{r}
+model<-lmer(sqrt(AUC) ~ phenotype + (1|plate) + (1|date), data=aucs)
+
+anova(model)
+qqPlot(residuals(model))
+```
+
+## Repeatability (Intra-class Correlation)
+
+How similar are metabolic rates among oysters within the same family, compared to between families?
+
+Close to 0 = Most variation is within families; little family structure. Metabolic rate is more influenced by individual-level noise, environment, or measurement error.
+
+Moderate 0.3-0.5 = There's moderate consistency among family members. Families differ somewhat in metabolic rates.
+
+High 0.6-1.0 = 	Most variation is between families; oysters from the same family have very similar metabolic rates. This suggests strong genetic or shared environmental control.
+```{r}
+repeat_model <- rpt(value ~ timepoint + (1|family), grname = "family", data = full_data, datatype = "Gaussian")
+
+summary(repeat_model)
+```
+
+Repeatability (R) value is 0.111 here - most variation is within families with little family structure 
+
+## Heritability estimates  
+
+Heritability estimate to compute the proportion of phenotypic variance that is genetic. 
+The H2 value close to 0 indicates variation is within family largely. Values between 0.2 - 0.4 indicates moderate heritability. Values >0.5 indicate stronger heritability. 
+
+```{r}
+# Convert to matrix: rows = oysters, columns = timepoints
+wide_data <- full_data %>% select(!c(length.mm, fluorescence.norm, fluorescence.corr, resazurin_counts)) %>% pivot_wider(names_from = timepoint, values_from = value)
+
+fluor_matrix <- as.matrix(wide_data[,-c(1:7)])  # remove ID columns
+fluor_fd <- Data2fd(argvals = 0:4, y = t(fluor_matrix))
+plot(fluor_fd)
+
+## Estimate heritability 
+anova_model <- aov(value ~ family, data = full_data)
+summary(anova_model)
+
+# Rough heritability estimate if design is appropriate:
+MS_family <- summary(anova_model)[[1]]["family", "Mean Sq"]
+MS_resid <- summary(anova_model)[[1]]["Residuals", "Mean Sq"]
+k<-length(unique(full_data$unique))
+
+heritability <- (MS_family - MS_resid) / (MS_family + (k - 1) * MS_resid)  # k = number of replicates
+heritability
+```
+
+Heritability = 0.0056 (low heritability, matching family variation above).  
+
+## Fit nonlinear curves 
+
+```{r}
+# Example for one oyster
+oyster_data <- full_data %>% filter(unique == "20250701 plate1 A02")%>%
+  mutate(time=as.numeric(timepoint))
+
+fit <- nls(value ~ a * exp(b * time), data = oyster_data,
+           start = list(a = 100, b = -0.1))
+
+summary(fit)
+
+oyster_data <- oyster_data %>%
+  mutate(predicted = predict(fit, newdata = oyster_data))
+
+ggplot(oyster_data, aes(x = time, y = value)) +
+  geom_point(color = "blue", size = 3) +  # Raw data points
+  geom_line(aes(y = predicted), color = "red", linewidth = 1.2) +  # Fitted curve
+  labs(title = "Fitted Exponential Curve vs. Raw Data",
+       x = "Time (hours)",
+       y = "Fluorescence (Metabolic Rate)") +
+  theme_minimal()
+```
+
+Run for all oysters 
+
+```{r}
+model_results <- full_data %>%
+  mutate(time = as.numeric(timepoint)) %>%
+  group_by(unique, family, phenotype) %>%
+  nest() %>%
+  mutate(
+    fit = map(data, ~ tryCatch(
+      nls(value ~ a * exp(b * time), data = .x,
+          start = list(a = 100, b = -0.1),
+          control = nls.control(maxiter = 100)),
+      error = function(e) NULL
+    )),
+    params = map(fit, ~ if (!is.null(.x)) tidy(.x) else NULL)
+  ) %>%
+  unnest(params) %>%
+  select(unique, family, phenotype, term, estimate) %>%
+  pivot_wider(names_from = term, values_from = estimate)
+
+family_summary <- model_results %>%
+  group_by(family, phenotype) %>%
+  summarise(
+    mean_a = mean(a, na.rm = TRUE),
+    sd_a = sd(a, na.rm = TRUE),
+    mean_b = mean(b, na.rm = TRUE),
+    sd_b = sd(b, na.rm = TRUE),
+    n = n()
+  )
+
+plot11<-ggplot(family_summary, aes(x = reorder(family, mean_b), y = mean_b)) +
+  facet_wrap(~phenotype)+
+  geom_point(color = "darkred", size = 3) +
+  geom_errorbar(aes(ymin = mean_b - sd_b, ymax = mean_b + sd_b), width = 0.2) +
+  labs(title = "Average Exponential Decay Rate (b) by Family",
+       x = "Family", y = "Mean b (Rate Constant)") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1));plot11
+
+ggsave(plot11, filename="figures/trials/exponential_growth_family.png", width=12, height=8, units="in")
+```
+
+Rate of metabolic growth/metabolic change over time is positive for all and is higher for some families.  
+
+## Clustering metabolic profiles 
+
+Cluster to find groups of oysters that behave similarly.  
+
+```{r}
+df_matrix <- full_data %>%
+  select(!c(resazurin_counts, length.mm, fluorescence.norm, fluorescence.corr))%>%
+  pivot_wider(names_from = timepoint, values_from = value) %>%
+  ungroup()%>%
+  select(!c(well, date, plate, family, temperature, phenotype))%>%
+  column_to_rownames("unique") %>%
+  as.matrix()
+
+clusters <- kmeans(df_matrix, centers = 3)
+
+df_clustered <- data.frame(oyster_id = rownames(df_matrix), cluster = clusters$cluster)
+```
+
+Plot a heatmap of cluster. 
+```{r}
+# Reorder matrix by cluster assignment
+ordered_matrix <- df_matrix[order(clusters$cluster), ]
+
+# Annotate rows with cluster info
+annotation <- data.frame(cluster = as.factor(clusters$cluster))
+rownames(annotation) <- rownames(df_matrix)
+
+# Plot heatmap
+pheatmap(ordered_matrix, cluster_rows = FALSE, cluster_cols = FALSE,
+         annotation_row = annotation,
+         main = "Heatmap of Fluorescence Profiles by Cluster")
+```
+
+Plot curves by cluster 
+```{r}
+# Reshape df_matrix back into long format for plotting
+df_long <- df_matrix %>%
+  as.data.frame() %>%
+  rownames_to_column("oyster_id") %>%
+  pivot_longer(-oyster_id, names_to = "timepoint", values_to = "value") %>%
+  left_join(df_clustered, by = c("oyster_id")) %>%
+  mutate(time = as.numeric(gsub("T", "", timepoint)))  # convert T0, T1, etc. to numeric
+
+# Plot average fluorescence over time by cluster
+plot12<-ggplot(df_long, aes(x = time, y = value, group = oyster_id)) +
+  stat_summary(aes(color = as.factor(cluster)), fun = mean, geom = "line", size = 1.2) +
+  labs(title = "Average Fluorescence Curve by Cluster",
+       x = "Time (hours)", y = "Fluorescence", color = "Cluster") +
+  theme_classic();plot12
+
+ggsave(plot12, filename="figures/trials/cluster_fluorescence_patterns.png", width=8, height=8, units="in")
+```
+
+Show families. 
+
+```{r}
+df_clustered_full <- full_data %>%
+  select(unique, family) %>%
+  distinct() %>%
+  left_join(df_clustered, by = c("unique" = "oyster_id"))
+
+plot13<-ggplot(df_clustered_full, aes(x = family, fill = factor(cluster))) +
+  geom_bar(position = "fill") +  # stacked proportional bar
+  labs(title = "Proportion of Clusters Within Each Family",
+       x = "Family", y = "Proportion of Oysters", fill = "Cluster") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  theme_classic();plot13
+
+ggsave(plot13, filename="figures/trials/cluster_assignments_family.png", width=10, height=8, units="in")
+```
+
+## Ridge plots 
+
+View distrubution of fluorescence values over time. 
+
+```{r}
+plot14<-ggplot(full_data, aes(x = value, y = as.factor(timepoint), fill = family)) +
+  geom_density_ridges(alpha = 0.7) +
+  labs(title = "Distribution of Fluorescence by Family")+
+  theme_classic();plot14
+
+ggsave(plot14, filename="figures/trials/ridge_family.png", width=10, height=8, units="in")
+
+plot15<-ggplot(full_data, aes(x = value, y = as.factor(timepoint), fill = phenotype)) +
+  geom_density_ridges(alpha = 0.7) +
+  labs(title = "Distribution of Fluorescence by Phenotype")+
+  theme_classic();plot15
+
+ggsave(plot15, filename="figures/trials/ridge_phenotype.png", width=10, height=8, units="in")
+```
+
+## Correlation with traits 
+
+Load in predicted performance data provided by the breeding program. Data are recorded as percent (proportion) difference in a trait from the general population mean. For example, 0.50 indicates a 50% higher value than general population.  
+
+```{r}
+performance<-read_excel(path="data/predicted_performance.xlsx")%>%mutate(family=as.factor(family))
+
+str(performance)
+```
+
+### Correlate with total metabolic activity (AUC)
+
+Merge into the AUC data set to correlate with total metabolic rates.
+
+```{r}
+merged<-left_join(aucs, performance)
+```
+
+Correlation of survival in high salinity and total metabolic activity. 
+
+```{r}
+plot15<-merged%>%
+  group_by(family, phenotype, `survival-high-salinity`)%>%
+  summarise(AUC=mean(AUC))%>%
+  
+  ggplot(., aes(x = AUC, y = `survival-high-salinity`)) +
+  facet_wrap(~phenotype)+
+  geom_point(color = "steelblue", size = 2) +  # scatter points
+  geom_smooth(method = "lm", se = TRUE, color = "firebrick", linetype = "dashed") +  # regression line
+  labs(
+    title = "Scatter Plot with Pearson Correlation",
+    x = "Total Metabolic Activity (AUC)",
+    y = "Survival in High Salinity"
+  )+
+  theme_classic();plot15
+
+ggsave(plot15, filename="figures/correlations/auc_survival-high-salinity.png", width=8, height=6, units="in")
+```
+
+Correlation of survival in low salinity and total metabolic activity. 
+
+```{r}
+plot16<-merged%>%
+  group_by(family, phenotype, `survival-low-salinity`)%>%
+  summarise(AUC=mean(AUC))%>%
+  
+  ggplot(., aes(x = AUC, y = `survival-low-salinity`, colour=phenotype, fill=phenotype)) +
+  facet_wrap(~phenotype, scales="free_x")+
+  scale_colour_manual(values=c("darkorange", "purple2"), name="Selected \nPhenotype")+
+  scale_fill_manual(values=c("darkorange", "purple2"), name="Selected \nPhenotype")+
+  geom_point(size = 2) +  # scatter points
+  geom_smooth(method = "lm", se = TRUE, linetype = "solid") +  # regression line
+  labs(
+    title = "",
+    x = "Total Metabolic Activity (AUC)",
+    y = "Predicted Survival in Low Salinity Environments"
+  )+
+  theme_classic();plot16
+
+ggsave(plot16, filename="figures/correlations/auc_survival-low-salinity.png", width=8, height=6, units="in")
+```
+
+Run a statistical test for this corrleation. 
+
+```{r}
+model_data<-merged%>%
+  group_by(family, phenotype, `survival-low-salinity`)%>%
+  summarise(AUC=mean(AUC))%>%
+  filter(phenotype=="high-salinity")
+  
+cor.test(model_data$AUC, model_data$`survival-low-salinity`)
+
+model_data<-merged%>%
+  group_by(family, phenotype, `survival-low-salinity`)%>%
+  summarise(AUC=mean(AUC))%>%
+  filter(phenotype=="low-salinity")
+  
+cor.test(model_data$AUC, model_data$`survival-low-salinity`)
+```
+
+Significant correlation for low salinity but not high salinity selected groups. 
+
+Correlation of weight in high salinity and total metabolic activity. 
+
+```{r}
+plot17<-merged%>%
+  group_by(family, phenotype, `weight-high-salinity`)%>%
+  summarise(AUC=mean(AUC))%>%
+  
+  ggplot(., aes(x = AUC, y = `weight-high-salinity`)) +
+  facet_wrap(~phenotype)+
+  geom_point(color = "steelblue", size = 2) +  # scatter points
+  geom_smooth(method = "lm", se = TRUE, color = "firebrick", linetype = "dashed") +  # regression line
+  labs(
+    title = "Scatter Plot with Pearson Correlation",
+    x = "Total Metabolic Activity (AUC)",
+    y = "Weight in High Salinity"
+  )+
+  theme_classic();plot17
+
+ggsave(plot17, filename="figures/correlations/auc_weight-high-salinity.png", width=8, height=6, units="in")
+```
+
+Correlation of weight in low salinity and total metabolic activity. 
+```{r}
+plot18<-merged%>%
+  group_by(family, phenotype, `weight-low-salinity`)%>%
+  summarise(AUC=mean(AUC))%>%
+  
+  ggplot(., aes(x = AUC, y = `weight-low-salinity`)) +
+  facet_wrap(~phenotype)+
+  geom_point(color = "steelblue", size = 2) +  # scatter points
+  geom_smooth(method = "lm", se = TRUE, color = "firebrick", linetype = "dashed") +  # regression line
+  labs(
+    title = "Scatter Plot with Pearson Correlation",
+    x = "Total Metabolic Activity (AUC)",
+    y = "Weight in Low Salinity"
+  )+
+  theme_classic();plot18
+
+ggsave(plot18, filename="figures/correlations/auc_weight-low-salinity.png", width=8, height=6, units="in")
+```
+
+### Correlate with metabolic slope in response to acute stress (Delta T0-T1)
+
+```{r}
+str(deltas)
+
+merged2<-left_join(deltas, performance)
+```
+
+Correlation of survival in high salinity and total metabolic activity. 
+
+```{r}
+plot19<-merged2%>%
+  group_by(family, phenotype, `survival-high-salinity`)%>%
+  summarise(delta=mean(delta_T0_T1))%>%
+  
+  ggplot(., aes(x = delta, y = `survival-high-salinity`)) +
+  facet_wrap(~phenotype)+
+  geom_point(color = "steelblue", size = 2) +  # scatter points
+  geom_smooth(method = "lm", se = TRUE, color = "firebrick", linetype = "dashed") +  # regression line
+  labs(
+    title = "Scatter Plot with Pearson Correlation",
+    x = "Metabolic Rate - Acute Stress",
+    y = "Survival in High Salinity"
+  )+
+  theme_classic();plot19
+
+ggsave(plot19, filename="figures/correlations/stress-rate_survival-high-salinity.png", width=8, height=6, units="in")
+```
+
+Correlation of survival in low salinity and total metabolic activity. 
+
+```{r}
+plot20<-merged2%>%
+  group_by(family, phenotype, `survival-low-salinity`)%>%
+  summarise(delta=mean(delta_T0_T1))%>%
+  
+  ggplot(., aes(x = delta, y = `survival-low-salinity`)) +
+  facet_wrap(~phenotype)+
+  geom_point(color = "steelblue", size = 2) +  # scatter points
+  geom_smooth(method = "lm", se = TRUE, color = "firebrick", linetype = "dashed") +  # regression line
+  labs(
+    title = "Scatter Plot with Pearson Correlation",
+    x = "Metabolic Rate - Acute Stress",
+    y = "Survival in Low Salinity"
+  )+
+  theme_classic();plot20
+
+ggsave(plot20, filename="figures/correlations/stress-rate_survival-low-salinity.png", width=8, height=6, units="in")
+```
+
+Run a statistical test for this corrleation. 
+
+```{r}
+model_data<-merged2%>%
+  group_by(family, phenotype, `survival-low-salinity`)%>%
+  summarise(delta=mean(delta_T0_T1))%>%
+  filter(phenotype=="high-salinity")
+  
+cor.test(model_data$delta, model_data$`survival-low-salinity`)
+
+model_data<-merged2%>%
+  group_by(family, phenotype, `survival-low-salinity`)%>%
+  summarise(delta=mean(delta_T0_T1))%>%
+  filter(phenotype=="low-salinity")
+  
+cor.test(model_data$delta, model_data$`survival-low-salinity`)
+```
+
+Significant correlation for low salinity but not high salinity selected groups. 
+
+Correlation of weight in high salinity and total metabolic activity. 
+
+```{r}
+plot21<-merged2%>%
+  group_by(family, phenotype, `weight-high-salinity`)%>%
+  summarise(delta=mean(delta_T0_T1))%>%
+  
+  ggplot(., aes(x = delta, y = `weight-high-salinity`)) +
+  facet_wrap(~phenotype)+
+  geom_point(color = "steelblue", size = 2) +  # scatter points
+  geom_smooth(method = "lm", se = TRUE, color = "firebrick", linetype = "dashed") +  # regression line
+  labs(
+    title = "Scatter Plot with Pearson Correlation",
+    x = "Metabolic Rate - Acute Stress",
+    y = "Weight in High Salinity"
+  )+
+  theme_classic();plot21
+
+ggsave(plot21, filename="figures/correlations/stress-rate_weight-high-salinity.png", width=8, height=6, units="in")
+```
+
+Correlation of weight in low salinity and total metabolic activity. 
+```{r}
+plot22<-merged2%>%
+  group_by(family, phenotype, `weight-low-salinity`)%>%
+  summarise(delta=mean(delta_T0_T1))%>%
+  
+  ggplot(., aes(x = delta, y = `weight-low-salinity`)) +
+  facet_wrap(~phenotype)+
+  geom_point(color = "steelblue", size = 2) +  # scatter points
+  geom_smooth(method = "lm", se = TRUE, color = "firebrick", linetype = "dashed") +  # regression line
+  labs(
+    title = "Scatter Plot with Pearson Correlation",
+    x = "Total Metabolic Activity (AUC)",
+    y = "Weight in Low Salinity"
+  )+
+  theme_classic();plot22
+
+ggsave(plot22, filename="figures/correlations/stress-rate_weight-low-salinity.png", width=8, height=6, units="in")
+```
+
