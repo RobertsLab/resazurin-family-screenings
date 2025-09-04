@@ -332,14 +332,14 @@ Remove any sample that reached > 19000 raw value at any point during the trials,
 
 ```{r}
 full_data%>%
-  filter(resazurin_counts>20000)%>%
+  filter(resazurin_counts>22000)%>%
   group_by(date, plate, well)%>%
   mutate(unique=paste(date, plate, well))
 
-#there are 8 samples that went above the threshold 
+#there are 39 samples that went above the threshold 
 
 list<-full_data%>%
-  filter(resazurin_counts>20000)%>%
+  filter(resazurin_counts>22000)%>%
   group_by(date, plate, well)%>%
   mutate(unique=paste(date, plate, well))%>%
   pull(unique)%>%
@@ -447,7 +447,7 @@ ggsave(plot2e, filename="taylor-shellfish-sept2025/figures/family_model_predicti
 
 plot2f<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color = family, group = family, fill = family)) +
   facet_wrap(~family, nrow=10, ncol=5)+
-  stat_summary(fun = mean, geom = "line", size = 1) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
   stat_summary(
     fun.data = mean_se,
     geom = "ribbon",
@@ -474,7 +474,7 @@ aucs <- full_data %>%
   mutate(time=as.numeric(timepoint))%>%
   group_by(date, plate, well, family) %>%
   summarise(AUC = trapz(time, value))%>%
-  filter(AUC>0)
+ filter(AUC>0)
 
 hist(aucs$AUC)
 ```
@@ -525,7 +525,7 @@ repeat_model <- rpt(value ~ timepoint + (1|family), grname = "family", data = fu
 summary(repeat_model)
 ```
 
-Repeatability (R) value is 0.159 here - most variation is within families with little family structure 
+Repeatability (R) value is 0.132 here - most variation is within families with little family structure 
 
 
 
