@@ -1,0 +1,46 @@
+
+
+Software Version	3.16.10
+
+
+
+Experiment File Path:	C:\Users\srlab\Desktop\resazurin_oysters\taylor-families\taylor-families-20250903.xpt
+Protocol File Path:	C:\Users\Public\Documents\Protocols\resazurin_96well.prt
+
+
+
+Plate Number	Plate 168
+Date	9/4/2025
+Time	12:46:11 PM
+Reader Type:	Synergy HTX
+Reader Serial Number:	25030704
+Reading Type	Reader
+
+Procedure Details
+
+Plate Type	96 WELL PLATE
+Eject plate on completion	
+Read	Fluorescence Endpoint
+	Full Plate
+	Filter Set 1
+	    Excitation: 528/20,  Emission: 590/20
+	    Optics: Top,  Gain: 35
+	Light Source: Tungsten,  Standard Dynamic Range
+	Read Speed: Normal,  Delay: 100 msec,  Measurements/Data Point: 10
+	Read Height: 1 mm
+
+
+
+Actual Temperature:	27.3
+
+Results
+	1	2	3	4	5	6	7	8	9	10	11	12
+A	18816	10560	16025	2316	9674	9413	6188	5206	4254	6067	10149	8672	528/20,590/20
+B	10124	13220	12842	15701	11282	10023	7113	9751	3257	5178	4934	5678	528/20,590/20
+C	11860	6260	11914	5894	11715	11452	2678	4067	3192	2593	3926	3106	528/20,590/20
+D	5585	5604	8819	7312	8126	1303	1556	1787	10625	3429	3290	8312	528/20,590/20
+E	8474	17031	3664	6805	4368	4378	1295	5583	5497	3191	7170	6521	528/20,590/20
+F	6857	4794	762	4373	12235	5219	2298	5150	8043	8862	1715	5237	528/20,590/20
+G	2254	4132	4884	5010	4973	12800	4280	6835	6013	8467	4813	12851	528/20,590/20
+H	357	341	371	447	335	374	426	359	486	372	369	379	528/20,590/20
+
