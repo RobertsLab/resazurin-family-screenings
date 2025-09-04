@@ -48,7 +48,6 @@ temp_plot<-temps%>%
   geom_point()+
   geom_smooth(aes(group=1), colour="black")+
   theme_classic()+
-  geom_vline(xintercept=3.5, linetype="dashed")+
   ylab("Water Temperature (°C)")+
   xlab("Time Point");temp_plot
 

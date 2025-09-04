@@ -1,0 +1,92 @@
+
+
+Software Version	3.16.10
+
+
+
+Experiment File Path:	C:\Users\srlab\Desktop\resazurin_oysters\taylor-families\taylor-families-20250903.xpt
+Protocol File Path:	C:\Users\Public\Documents\Protocols\resazurin_96well.prt
+
+
+
+Plate Number	Plate 105
+Date	9/3/2025
+Time	3:09:27 PM
+Reader Type:	Synergy HTX
+Reader Serial Number:	25030704
+Reading Type	Reader
+
+Procedure Details
+
+Plate Type	96 WELL PLATE
+Eject plate on completion	
+Read	Fluorescence Endpoint
+	Full Plate
+	Filter Set 1
+	    Excitation: 528/20,  Emission: 590/20
+	    Optics: Top,  Gain: 35
+	Light Source: Tungsten,  Standard Dynamic Range
+	Read Speed: Normal,  Delay: 100 msec,  Measurements/Data Point: 10
+	Read Height: 1 mm
+
+
+
+Actual Temperature:	28.7
+
+Results
+	1	2	3	4	5	6	7	8	9	10	11	12
+A	1967	5513	8639	12335	6964	2402	11291	2924	13964	8568	11049	5505	528/20,590/20
+B	11230	10600	5637	18109	9645	12007	11694	9295	18063	9124	9858	7519	528/20,590/20
+C	4785	7492	8635	10761	4150	11751	15292	9802	11219	8527	15350	6854	528/20,590/20
+D	16458	6041	7197	13391	8753	17214	10194	18816	16718	11248	14019	7502	528/20,590/20
+E	9330	6579	8524	7342	8796	4833	13775	15015	8170	14938	18369	11316	528/20,590/20
+F	9585	5347	5865	7786	8674	11624	13628	8538	7540	15393	10772	16085	528/20,590/20
+G	5135	9251	6051	6235	15355	10494	6762	3060	8378	9798	4846	5758	528/20,590/20
+H	316	325	328	341	323	345	339	334	342	357	342	327	528/20,590/20
+
+
+
+Software Version	3.16.10
+
+
+
+Experiment File Path:	C:\Users\srlab\Desktop\resazurin_oysters\taylor-families\taylor-families-20250903.xpt
+Protocol File Path:	C:\Users\Public\Documents\Protocols\resazurin_96well.prt
+
+
+
+Plate Number	Plate 106
+Date	9/3/2025
+Time	3:10:53 PM
+Reader Type:	Synergy HTX
+Reader Serial Number:	25030704
+Reading Type	Reader
+
+Procedure Details
+
+Plate Type	96 WELL PLATE
+Eject plate on completion	
+Read	Fluorescence Endpoint
+	Full Plate
+	Filter Set 1
+	    Excitation: 528/20,  Emission: 590/20
+	    Optics: Top,  Gain: 35
+	Light Source: Tungsten,  Standard Dynamic Range
+	Read Speed: Normal,  Delay: 100 msec,  Measurements/Data Point: 10
+	Read Height: 1 mm
+
+
+
+Actual Temperature:	28.7
+
+Results
+	1	2	3	4	5	6	7	8	9	10	11	12
+A	6289	8817	18817	16769	2121	5820	11167	3262	17472	13890	10653	12174	528/20,590/20
+B	6785	5627	4296	10415	14916	8036	7277	8601	20593	10074	9491	4266	528/20,590/20
+C	17065	10823	22506	10758	13373	12632	3720	13594	18254	3634	12777	5320	528/20,590/20
+D	10819	10719	13091	13923	22050	13764	4751	17047	6851	3285	5395	10105	528/20,590/20
+E	16331	21003	14729	7265	6898	11117	3975	20767	3926	13229	5233	5158	528/20,590/20
+F	22000	13525	10243	10191	6601	16114	4694	7912	14839	3632	1709	6361	528/20,590/20
+G	11053	13178	22919	16261	18462	7952	15781	4428	3146	7586	6681	2956	528/20,590/20
+H	337	336	349	357	346	360	360	342	356	356	338	5050	528/20,590/20
+
