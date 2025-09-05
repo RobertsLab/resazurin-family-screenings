@@ -626,8 +626,6 @@ oyster_compare %>%
 
 
 
-
-
 ### Did family performance on the first day correlate with performance on the second day? 
 
 Rank based performance of AUC values for each oyster on day 1 and day 2 and conduct correlations of those ranks. 
