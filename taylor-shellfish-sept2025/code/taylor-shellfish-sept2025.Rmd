@@ -14,6 +14,12 @@ editor_options:
   chunk_output_type: console
 ---
 
+TO DO 
+- Separate dates
+- Size normalization 
+- Compare day 2 ranks (repeated plates) to day 1 ranks 
+
+
 This script analyzes resazurin assays on Taylor Shellfish seed.  
 
 # Set up 
@@ -49,7 +55,7 @@ library(ggpubr)
 library(broom.mixed)
 ```
 
-# Resazurin Trials   
+# Resazurin Trials
 ## Load data 
 
 ```{r}
@@ -137,6 +143,8 @@ full_data<-left_join(combined_data, metadata, by=c("date", "well", "plate"))%>%
   filter(!is.na(type))
 
 head(full_data)
+
+unique(full_data$date)
 ```
 
 Load in size data. 
@@ -161,6 +169,15 @@ Join with data.
 #  select(!notes)
 
 #head(full_data)
+```
+
+Generate a list of families. 
+
+```{r}
+families<-full_data%>%
+  pull(family)%>%
+  unique()%>%
+  list();families
 ```
 
 ## Prep the data 
@@ -241,6 +258,7 @@ View blanks
 ```{r}
 full_data%>%
   filter(type=="blank")%>%
+  filter(fluorescence.norm<2.5)%>% #remove one outlier (likely accidentally had an oyster on 9/4)
   ggplot(aes(x=timepoint, y=fluorescence.norm, group=interaction(date, plate, well)))+
   facet_wrap(~date)+
   geom_point()+
@@ -253,6 +271,7 @@ Calculate mean change in blank at each time point.
 ```{r}
 blanks<-full_data%>%
   filter(type=="blank")%>%
+  filter(fluorescence.norm<2.5)%>%
   group_by(date, plate, timepoint)%>%
   summarise(mean_blank=mean(fluorescence.norm));blanks
 ```
@@ -331,12 +350,14 @@ full_data<-full_data%>%
 Remove any sample that reached > 19000 raw value at any point during the trials, these were over saturated and data is unreliable. 
 
 ```{r}
+hist(full_data$resazurin_counts)
+
 full_data%>%
   filter(resazurin_counts>22000)%>%
   group_by(date, plate, well)%>%
   mutate(unique=paste(date, plate, well))
 
-#there are 39 samples that went above the threshold 
+#there are 42 samples that went above the threshold 
 
 list<-full_data%>%
   filter(resazurin_counts>22000)%>%
@@ -364,7 +385,11 @@ Ideal size range is in the middle range of what we used for these trials (~ >10m
 hist(full_data$value)
 ```
 
-## Models and Plots - by family 
+## Models and Plots - by family for full trial on 9/3
+
+```{r}
+first_data<-full_data%>%filter(date=="20250903")
+```
 
 Set order of families for analysis. 
 
@@ -377,7 +402,7 @@ Set order of families for analysis.
 
 Plot individual data. 
 ```{r}
-plot1<-full_data%>%
+plot1<-first_data%>%
   ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(date, family, plate, well)))+
   facet_wrap(~date)+
   geom_point()+
@@ -387,14 +412,30 @@ plot1<-full_data%>%
 ggsave(plot1, filename="taylor-shellfish-sept2025/figures/individual_trajectories.png", width=10, height=8, units="in")
 ```
 
-Run a model on metabolic rates. 
+Remove oysters that were likely dead or not active (values <1000 in raw fluorescence)
 
 ```{r}
-model<-full_data%>%
+dim(first_data)
+
+first_data<-first_data%>%
+  group_by(unique) %>%
+  # keep groups where at least one timepoint is >= 1000 (remove those below 1000)
+  filter(any(resazurin_counts >= 1000)) %>%
+  ungroup()
+
+dim(first_data)
+```
+
+Run a model on metabolic rates for the full trial on 9/3. 
+
+```{r}
+model<-first_data%>%
   lmer((value)^(1/3) ~ family * timepoint + (1|well:plate) + (1|plate), data=.)
 
+hist(first_data$value^(1/3))
+
 anova(model)
-summary(model)
+#summary(model)
 qqPlot(residuals(model))
 leveneTest((value)^(1/3) ~ family * timepoint, data=full_data)
 ```
@@ -402,7 +443,7 @@ leveneTest((value)^(1/3) ~ family * timepoint, data=full_data)
 Plot raw data for each family. 
 
 ```{r}
-plot2<-full_data%>%
+plot2<-first_data%>%
   ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(date, family)))+
   facet_wrap(~family)+
   geom_smooth(stat="smooth")+
@@ -410,8 +451,9 @@ plot2<-full_data%>%
 
 ggsave(plot2, filename="taylor-shellfish-sept2025/figures/family_trajectories.png", width=12, height=12, units="in")
 
-plot2d<-full_data%>%
+plot2d<-first_data%>%
   ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(family)))+
+  facet_wrap(~date)+
   geom_smooth(stat="smooth", method="lm", se=TRUE)+
   theme_classic();plot2d
 
@@ -422,7 +464,7 @@ Plot model estimates for metabolic rates for each family.
 
 ```{r}
 #predict data 
-pred_data <- augment(model, full_data) %>%
+pred_data <- augment(model, first_data) %>%
   mutate(predicted_value_family = (.fitted)^3)  # back-transform to original scale
 
 #plot
@@ -465,16 +507,16 @@ plot2f<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color =
 ggsave(plot2f, filename="taylor-shellfish-sept2025/figures/family_model_predictions_panel.png", width=12, height=10, units="in")
 ```
 
-## Area under the curve 
+### Area under the curve 
 
 Area under the curve (AUC): Summarizes total metabolic activity per oyster.
 
 ```{r}
-aucs <- full_data %>%
+aucs <- first_data %>%
   mutate(time=as.numeric(timepoint))%>%
   group_by(date, plate, well, family) %>%
-  summarise(AUC = trapz(time, value))%>%
- filter(AUC>0)
+  summarise(AUC = trapz(time, value))#%>%
+ #filter(AUC>0)
 
 hist(aucs$AUC)
 ```
@@ -493,7 +535,7 @@ plot10a<-aucs%>%
   ggplot(aes(x = reorder(family, mean), y = mean, colour = family)) +
   geom_point()+
   geom_errorbar(aes(ymin=mean-se, ymax=mean+se))+
-  labs(title = "C", x = "Family", y = "AUC") +
+  labs(title = "", x = "Family", y = "AUC") +
   theme_classic();plot10a
 
 ggsave(plot10a, filename="taylor-shellfish-sept2025/figures/auc_family.png", width=10, height=5, units="in")
@@ -510,7 +552,7 @@ anova(model)
 qqPlot(residuals(model))
 ```
 
-## Repeatability (Intra-class Correlation)
+### Repeatability (Intra-class Correlation)
 
 How similar are metabolic rates among oysters within the same family, compared to between families?
 
@@ -520,167 +562,115 @@ Moderate 0.3-0.5 = There's moderate consistency among family members. Families d
 
 High 0.6-1.0 = 	Most variation is between families; oysters from the same family have very similar metabolic rates. This suggests strong genetic or shared environmental control.
 ```{r}
-repeat_model <- rpt(value ~ timepoint + (1|family), grname = "family", data = full_data, datatype = "Gaussian")
+repeat_model <- rpt(value ~ timepoint + (1|family), grname = "family", data = first_data, datatype = "Gaussian")
 
 summary(repeat_model)
 ```
 
-Repeatability (R) value is 0.132 here - most variation is within families with little family structure 
+Repeatability (R) value is 0.131 here - most variation is within families with little family structure 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-## Fit nonlinear curves 
+## Rank based analysis of family performance comparing 9/3 and 9/4 
 
 ```{r}
-# Example for one oyster
-oyster_data <- full_data %>% filter(unique == "20250903 plate1 A02")%>%
-  mutate(time=as.numeric(timepoint))
+plate_list<-c("plate1",  "plate10", "plate11", "plate12", "plate13", "plate14", "plate15", "plate16", "plate17", "plate18", "plate19", "plate2", "plate3", "plate4", "plate5", "plate6", "plate7", "plate8", "plate9")
 
-fit <- nls(value ~ a * exp(b * time), data = oyster_data,
-           start = list(a = 100, b = -0.1))
+second_data<-full_data%>%
+  filter(plate %in% plate_list)%>%
+  mutate(unique=paste(plate, well))
 
-summary(fit)
-
-oyster_data <- oyster_data %>%
-  mutate(predicted = predict(fit, newdata = oyster_data))
-
-ggplot(oyster_data, aes(x = time, y = value)) +
-  geom_point(color = "blue", size = 3) +  # Raw data points
-  geom_line(aes(y = predicted), color = "red", linewidth = 1.2) +  # Fitted curve
-  labs(title = "Fitted Exponential Curve vs. Raw Data",
-       x = "Time (hours)",
-       y = "Fluorescence (Metabolic Rate)") +
-  theme_minimal()
+str(second_data)
 ```
 
-Run for all oysters 
+### Did individual performance on the first day correlate with performance on the second day? 
+
+Rank based performance of AUC values for each oyster on day 1 and day 2 and conduct correlations of those ranks. 
+
+Calculate AUC for each individual on each day. 
 
 ```{r}
-model_results <- full_data %>%
-  mutate(time = as.numeric(timepoint)) %>%
-  group_by(unique, family) %>%
-  nest() %>%
-  mutate(
-    fit = map(data, ~ tryCatch(
-      nls(value ~ a * exp(b * time), data = .x,
-          start = list(a = 100, b = -0.1),
-          control = nls.control(maxiter = 100)),
-      error = function(e) NULL
-    )),
-    params = map(fit, ~ if (!is.null(.x)) tidy(.x) else NULL)
-  ) %>%
-  unnest(params) %>%
-  select(unique, family, term, estimate) %>%
-  pivot_wider(names_from = term, values_from = estimate)
+oyster_perf<-second_data %>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, plate, well, unique, family) %>%
+  summarise(AUC = trapz(time, value))%>%
+  ungroup()
 
-family_summary <- model_results %>%
-  group_by(family) %>%
-  summarise(
-    mean_a = mean(a, na.rm = TRUE),
-    sd_a = sd(a, na.rm = TRUE),
-    mean_b = mean(b, na.rm = TRUE),
-    sd_b = sd(b, na.rm = TRUE),
-    n = n()
-  )
+# Split into Day 1 and Day 2
+day1 <- oyster_perf %>% filter(date == "20250903") %>%
+  select(unique, family, perf_day1=AUC)
 
-plot11<-ggplot(family_summary, aes(x = reorder(family, mean_b), y = mean_b)) +
-  geom_point(color = "darkred", size = 3) +
-  geom_errorbar(aes(ymin = mean_b - sd_b, ymax = mean_b + sd_b), width = 0.2) +
-  labs(title = "Average Exponential Decay Rate (b) by Family",
-       x = "Family", y = "Mean b (Rate Constant)") +
-  theme_classic() +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1));plot11
+day2 <- oyster_perf %>% filter(date == "20250904") %>%
+  select(unique, family, perf_day2=AUC)
+
+# Merge by individual
+oyster_compare <- inner_join(day1, day2, by = c("unique", "family"))
 ```
 
-## TO DO Clustering metabolic profiles 
+Run and plot a correlation. 
+```{r}
+cor.test(oyster_compare$perf_day1, oyster_compare$perf_day2, method = "spearman")
+```
 
-Cluster to find groups of oysters that behave similarly.  
+There is a significant and moderately positive (r=0.33) correlation. 
 
 ```{r}
-df_matrix <- full_data %>%
-  select(!c(resazurin_counts, length.mm, fluorescence.norm, fluorescence.corr))%>%
-  pivot_wider(names_from = timepoint, values_from = value) %>%
-  ungroup()%>%
-  select(!c(well, date, plate, family, temperature, phenotype))%>%
-  column_to_rownames("unique") %>%
-  as.matrix()
-
-clusters <- kmeans(df_matrix, centers = 3)
-
-df_clustered <- data.frame(oyster_id = rownames(df_matrix), cluster = clusters$cluster)
+oyster_compare %>%
+  mutate(rank_day1 = rank(-perf_day1),   # - to rank high values as 1
+         rank_day2 = rank(-perf_day2)) %>%
+  ggplot(aes(x = rank_day1, y = rank_day2)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(x = "Rank Day 1", y = "Rank Day 2",
+       title = "Oyster Performance Consistency Across Days") +
+  theme_classic()
 ```
 
-Plot a heatmap of cluster. 
-```{r}
-# Reorder matrix by cluster assignment
-ordered_matrix <- df_matrix[order(clusters$cluster), ]
 
-# Annotate rows with cluster info
-annotation <- data.frame(cluster = as.factor(clusters$cluster))
-rownames(annotation) <- rownames(df_matrix)
 
-# Plot heatmap
-pheatmap(ordered_matrix, cluster_rows = FALSE, cluster_cols = FALSE,
-         annotation_row = annotation,
-         main = "Heatmap of Fluorescence Profiles by Cluster")
-```
 
-Plot curves by cluster 
-```{r}
-# Reshape df_matrix back into long format for plotting
-df_long <- df_matrix %>%
-  as.data.frame() %>%
-  rownames_to_column("oyster_id") %>%
-  pivot_longer(-oyster_id, names_to = "timepoint", values_to = "value") %>%
-  left_join(df_clustered, by = c("oyster_id")) %>%
-  mutate(time = as.numeric(gsub("T", "", timepoint)))  # convert T0, T1, etc. to numeric
 
-# Plot average fluorescence over time by cluster
-plot12<-ggplot(df_long, aes(x = time, y = value, group = oyster_id)) +
-  stat_summary(aes(color = as.factor(cluster)), fun = mean, geom = "line", size = 1.2) +
-  labs(title = "Average Fluorescence Curve by Cluster",
-       x = "Time (hours)", y = "Fluorescence", color = "Cluster") +
-  theme_classic();plot12
+### Did family performance on the first day correlate with performance on the second day? 
 
-ggsave(plot12, filename="figures/trials/cluster_fluorescence_patterns.png", width=8, height=8, units="in")
-```
+Rank based performance of AUC values for each oyster on day 1 and day 2 and conduct correlations of those ranks. 
 
-Show families. 
+Calculate AUC for each family on each day. 
 
 ```{r}
-df_clustered_full <- full_data %>%
-  select(unique, family) %>%
-  distinct() %>%
-  left_join(df_clustered, by = c("unique" = "oyster_id"))
+oyster_perf<-second_data %>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, family) %>%
+  summarise(AUC = trapz(time, value))%>%
+  ungroup()
 
-plot13<-ggplot(df_clustered_full, aes(x = family, fill = factor(cluster))) +
-  geom_bar(position = "fill") +  # stacked proportional bar
-  labs(title = "Proportion of Clusters Within Each Family",
-       x = "Family", y = "Proportion of Oysters", fill = "Cluster") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
-  theme_classic();plot13
+# Split into Day 1 and Day 2
+day1 <- oyster_perf %>% filter(date == "20250903") %>%
+  select(family, perf_day1=AUC)
 
-ggsave(plot13, filename="figures/trials/cluster_assignments_family.png", width=10, height=8, units="in")
+day2 <- oyster_perf %>% filter(date == "20250904") %>%
+  select(family, perf_day2=AUC)
+
+# Merge by individual
+oyster_compare <- inner_join(day1, day2, by = c("family"))
 ```
 
-## Ridge plots 
+Run and plot a correlation. 
+```{r}
+cor.test(oyster_compare$perf_day1, oyster_compare$perf_day2, method = "spearman")
+```
 
-View distrubution of fluorescence values over time. 
+No significant correlation.  
 
 ```{r}
-plot14<-ggplot(full_data, aes(x = value, y = as.factor(timepoint), fill = family)) +
-  geom_density_ridges(alpha = 0.7) +
-  labs(title = "Distribution of Fluorescence by Family")+
-  theme_classic();plot14
+oyster_compare %>%
+  mutate(rank_day1 = rank(-perf_day1),   # - to rank high values as 1
+         rank_day2 = rank(-perf_day2)) %>%
+  ggplot(aes(x = rank_day1, y = rank_day2)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(x = "Rank Day 1", y = "Rank Day 2",
+       title = "Oyster Performance Consistency Across Days") +
+  theme_classic()
 ```
+
+No relationship between days. 
+
+
