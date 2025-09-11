@@ -14,12 +14,6 @@ editor_options:
   chunk_output_type: console
 ---
 
-TO DO 
-- Separate dates
-- Size normalization 
-- Compare day 2 ranks (repeated plates) to day 1 ranks 
-
-
 This script analyzes resazurin assays on Taylor Shellfish seed.  
 
 # Set up 
@@ -150,28 +144,36 @@ unique(full_data$date)
 Load in size data. 
 
 ```{r}
-#size<-read_xlsx("data/size/trial_size.xlsx")%>%
-#  mutate(date=as.character(date))
+size<-read_xlsx("taylor-shellfish-sept2025/data/size/taylor-shellfish-family-size.xlsx")
+
+#calculate mean size per family
+size<-size%>%
+  mutate(family=as.character(family))%>%
+  group_by(family)%>%
+  summarise(length.mm=mean(length.mm));size
+
+#list families 
+length(unique(levels(as.factor(size$family))))
+length(unique(levels(as.factor(full_data$family))))
 ```
 
 Join with data. 
 
 ```{r}
-#str(full_data)
-#str(size)
+str(full_data)
+str(size)
 
-#full_data<-left_join(full_data, size, by=c("date", "plate", "well"))
-#head(full_data)
+full_data<-left_join(full_data, size, by=c("family"))
+head(full_data)
 
-#full_data<-full_data%>%
-#  select(!Source)%>%
-#  select(!FileName)%>%
-#  select(!notes)
+full_data<-full_data%>%
+  select(!Source)%>%
+  select(!FileName)
 
-#head(full_data)
+head(full_data)
 ```
 
-Generate a list of families. 
+Generate a list of families in the dataframe. 
 
 ```{r}
 families<-full_data%>%
@@ -206,7 +208,7 @@ blank_means <- full_data %>%
 
 # 2) make one new row per (date, plate, well, family, type) that is NOT a blank
 t0_rows <- full_data %>%
-  distinct(date, plate, well, family, type) %>%   # one per well on each plate
+  distinct(date, plate, well, family, type, length.mm) %>%   # one per well on each plate
   left_join(blank_means, by = c("date", "plate")) %>%
   filter(!is.na(blank_mean)) %>%                   # drop plates without blanks
   mutate(
@@ -310,19 +312,19 @@ full_data%>%
 Size normalize data.
 ```{r}
 #normalize by length
-#full_data<-full_data%>%
-#  mutate(fluorescence.corr.mm=fluorescence.corr/length.mm)
+full_data<-full_data%>%
+  mutate(fluorescence.corr.mm=fluorescence.corr/length.mm)
 ```
 
 Plot again. 
 
 ```{r}
-#full_data%>%
-#  ggplot(aes(x=timepoint, y=fluorescence.corr.mm, colour=family, group=interaction(date, well, plate)))+
-#  facet_wrap(~date)+
-#  geom_point()+
-#  geom_line()+
-#  theme_classic()
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr.mm, colour=family, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
 ```
 
 Remove unnecessary columns. 
@@ -341,13 +343,12 @@ full_data<-full_data%>%
 str(full_data)
 
 full_data<-full_data%>%
-  rename(value=fluorescence.corr)
-  #rename(value=fluorescence.corr.mm)
+  rename(value=fluorescence.corr.mm)
 ```
 
 ### Remove oversaturated samples
 
-Remove any sample that reached > 19000 raw value at any point during the trials, these were over saturated and data is unreliable. 
+Remove any sample that reached > 22000 raw value at any point during the trials, these were over saturated and data is unreliable. 
 
 ```{r}
 hist(full_data$resazurin_counts)
@@ -375,10 +376,10 @@ full_data<-full_data%>%
   filter(!unique %in% list)
 ```
 
-Ideal size range is in the middle range of what we used for these trials (~ >10mm and less that 18mm) 
+Ideal size range is in the middle range of what we used for these trials (1.8-4.7mm) 
 ```{r}
-#hist(full_data$length.mm)
-#range(full_data$length.mm)
+hist(full_data$length.mm)
+range(full_data$length.mm, na.rm=TRUE)
 ```
 
 ```{r}
@@ -567,7 +568,7 @@ repeat_model <- rpt(value ~ timepoint + (1|family), grname = "family", data = fi
 summary(repeat_model)
 ```
 
-Repeatability (R) value is 0.131 here - most variation is within families with little family structure 
+Repeatability (R) value is 0.159 here - most variation is within families with little family structure 
 
 ## Rank based analysis of family performance comparing 9/3 and 9/4 
 
@@ -623,8 +624,6 @@ oyster_compare %>%
        title = "Oyster Performance Consistency Across Days") +
   theme_classic()
 ```
-
-
 
 ### Did family performance on the first day correlate with performance on the second day? 
 
