@@ -619,7 +619,8 @@ oyster_compare %>%
          rank_day2 = rank(-perf_day2)) %>%
   ggplot(aes(x = rank_day1, y = rank_day2)) +
   geom_point(alpha = 0.6) +
-  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "solid", color = "red", linewidth=1.5) +
+    #geom_smooth(method = "lm", se = FALSE, color = "blue", linewidth=2) +
   labs(x = "Rank Day 1", y = "Rank Day 2",
        title = "Oyster Performance Consistency Across Days") +
   theme_classic()
@@ -662,7 +663,7 @@ oyster_compare %>%
          rank_day2 = rank(-perf_day2)) %>%
   ggplot(aes(x = rank_day1, y = rank_day2)) +
   geom_point(alpha = 0.6) +
-  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "solid", color = "red", linewidth=1.5) +
   labs(x = "Rank Day 1", y = "Rank Day 2",
        title = "Oyster Performance Consistency Across Days") +
   theme_classic()
