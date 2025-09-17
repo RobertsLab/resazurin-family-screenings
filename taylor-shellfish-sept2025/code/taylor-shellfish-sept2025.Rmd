@@ -619,7 +619,7 @@ oyster_compare %>%
          rank_day2 = rank(-perf_day2)) %>%
   ggplot(aes(x = rank_day1, y = rank_day2)) +
   geom_point(alpha = 0.6) +
-  geom_abline(intercept = 0, slope = 1, linetype = "solid", color = "red", linewidth=1.5) +
+  geom_abline(intercept = 0, slope = 1, linetype = "solid", color = "red", linewidth=1.5) + 
     #geom_smooth(method = "lm", se = FALSE, color = "blue", linewidth=2) +
   labs(x = "Rank Day 1", y = "Rank Day 2",
        title = "Oyster Performance Consistency Across Days") +
@@ -670,5 +670,168 @@ oyster_compare %>%
 ```
 
 No relationship between days. 
+
+## Output list of metrics 
+ 
+Day 1 Total slope
+Day 1 AUC 
+Day 2 Total slope 
+Day 2 AUC
+Day 1 vs 2 Total slope (% diff)
+Day 1 vs 2 AUC (% diff)
+Ratio day 1:day 2 slope
+Ratio day 1:day 2 AUC
+Day 1 & Day 2 mean slope
+Day 1 & Day 2 mean AUC
+Day 1 & Day 2 total AUC
+
+Create a data frame to populate. 
+```{r}
+metrics <- data.frame(
+  family = character(0),
+
+  day1_vs_day2_ratio_slope = numeric(0),
+  day1_vs_day2_ratio_auc = numeric(0)
+)
+```
+
+```{r}
+head(full_data)
+head(oyster_compare)
+```
+
+Add in AUC data from day 1 
+```{r}
+data1<-aucs%>%
+  group_by(family)%>%
+  summarise(day1_auc=mean(AUC))
+```
+
+Add in slope data from day 1
+```{r}
+# nest data 
+nested <- full_data %>%
+  filter(date=="20250903")%>%
+  group_by(unique, family) %>%
+  nest()
+
+nested$data[[1]]
+
+# group by oyster_id and phase, then fit a linear model of metabolic_rate ~ time
+data2 <- nested %>%
+  mutate(
+    model = map(data, ~ lm(value ~ as.numeric(timepoint), data = .x)),        # fit model
+    slope = map_dbl(model, ~ coef(.x)[["as.numeric(timepoint)"]])                      # extract slope
+  ) %>%
+  select(unique, family, slope)%>%
+  group_by(family)%>%
+  summarise(day1_slope=mean(slope))
+
+metrics<-left_join(data1, data2)
+```
+
+Add in day 2 AUC. 
+
+```{r}
+data3 <- full_data %>%
+  filter(date=="20250904")%>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, plate, well, family) %>%
+  summarise(AUC = trapz(time, value))%>%
+  group_by(family)%>%
+  summarise(day2_auc=mean(AUC))
+
+metrics<-left_join(metrics, data3)
+```
+
+Add in day 2 slopes. 
+
+```{r}
+# nest data 
+nested <- full_data %>%
+  filter(date=="20250904")%>%
+  group_by(unique, family) %>%
+  nest()
+
+nested$data[[1]]
+
+# group by oyster_id and phase, then fit a linear model of metabolic_rate ~ time
+data4 <- nested %>%
+  mutate(
+    model = map(data, ~ lm(value ~ as.numeric(timepoint), data = .x)),        # fit model
+    slope = map_dbl(model, ~ coef(.x)[["as.numeric(timepoint)"]])                      # extract slope
+  ) %>%
+  select(unique, family, slope)%>%
+  group_by(family)%>%
+  summarise(day2_slope=mean(slope))
+
+metrics<-left_join(metrics, data4)
+```
+
+Add in cumulative mean AUC. 
+
+```{r}
+data5 <- full_data %>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, plate, well, family) %>%
+  summarise(AUC = trapz(time, value))%>%
+  group_by(family)%>%
+  summarise(cumulative_mean_auc=mean(AUC))
+
+metrics<-left_join(metrics, data5)
+```
+
+Add in cumulative mean slopes. 
+
+```{r}
+# nest data 
+nested <- full_data %>%
+  group_by(unique, date, family) %>%
+  nest()
+
+nested$data[[1]]
+
+# group by oyster_id and phase, then fit a linear model of metabolic_rate ~ time
+data6 <- nested %>%
+  mutate(
+    model = map(data, ~ lm(value ~ as.numeric(timepoint), data = .x)),        # fit model
+    slope = map_dbl(model, ~ coef(.x)[["as.numeric(timepoint)"]])                      # extract slope
+  ) %>%
+  select(unique, date, family, slope)%>%
+  group_by(family)%>%
+  summarise(cumulative_mean_slope=mean(slope))
+
+metrics<-left_join(metrics, data6)
+
+head(metrics)
+```
+
+Calculate percent change in slope and auc from day 1 to day 2. 
+
+```{r}
+metrics<-metrics%>%
+  mutate(day1_vs_day2_perc_change_slope = ((day2_slope-day1_slope)/day2_slope)*100)%>%
+  mutate(day1_vs_day2_perc_change_auc = ((day2_auc-day1_auc)/day2_auc)*100)
+```
+
+Calculate ratio between day 1 and day 2 slopes and auc (day1:day2). 
+
+```{r}
+metrics<-metrics%>%
+  mutate(day1_vs_day2_ratio_slope = (day1_slope/day2_slope))%>%
+  mutate(day1_vs_day2_ratio_auc = (day1_auc/day2_auc))
+```
+
+Output file. 
+
+```{r}
+metrics%>%
+  write_csv("taylor-shellfish-sept2025/output/taylor_screening_metrics.csv")
+```
+
+
+
+
+
 
 
