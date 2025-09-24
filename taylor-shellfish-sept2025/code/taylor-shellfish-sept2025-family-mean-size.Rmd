@@ -1,0 +1,837 @@
+---
+title: Taylor Shellfish Sept 2025 resazurin family screening - mean family size normalization 
+author: "AS Huffmyer"
+date: '2025'
+output:
+  github_document: null
+  md_document: default
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 6
+    toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+
+This script analyzes resazurin assays on Taylor Shellfish seed. This script uses mean family size normalization
+
+# Set up 
+
+Set up workspace, set options, and load required packages.    
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+Load libraries. 
+```{r}
+library(MASS) 
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(cowplot)
+library(lme4)
+library(lmerTest)
+library(car)
+library(effects)
+library(emmeans)
+library(tools)
+library(pracma)
+library(rptR)
+library(fda)
+library(nls2)
+library(purrr)
+library(broom)
+library(pheatmap)
+library(vegan)
+library(ggridges)
+library(ggpubr)
+library(broom.mixed)
+```
+
+# Resazurin Trials
+## Load data 
+
+```{r}
+# Set the folder path
+folder_path <- "taylor-shellfish-sept2025/data/plate-files"  
+
+# List all txt files in the folder
+file_list <- list.files(path = folder_path, pattern = "\\.txt$", full.names = TRUE, recursive=TRUE)
+
+# Check if any files are found
+if (length(file_list) == 0) {
+  stop("No txt files found in the specified folder. Check the folder path or file extension.")
+}
+
+# Initialize an empty list to store processed data
+data_list <- list()
+
+# Loop through each file and load the data
+for (file in file_list) {
+  # Ensure file is a character string
+  if (!is.character(file)) next
+  
+  # Extract file name without extension
+  file_name <- file_path_sans_ext(basename(file))
+  
+  # Read the text file, skipping the first row (metadata)
+  data <- read.delim(file, header = FALSE, skip = 37)
+  
+  # Assign column names: first column is row labels (A–H), others are 1–12
+  colnames(data) <- c("Row", as.character(1:12))
+  
+  #remove last column
+  data<-data%>%select(-ncol(data))
+  
+  # Convert to long format
+  data_long <- data %>%
+    pivot_longer(cols = -Row, names_to = "Column", values_to = "Value") %>%
+    mutate(
+      Column = sprintf("%02d", as.integer(Column)),  # Ensure two-digit column numbers
+      Well_ID = paste0(Row, Column),                # Format well ID as "A01", "B02", etc.
+      FileName = file_name,                          # Add file name
+      plate = str_extract(file_name, "plate\\d+"),  # Extract "plateX"
+      date = str_extract(file_name, "^\\d{8}"),     # Extract 8-digit date
+      timepoint = str_extract(file_name, "T\\d+(\\.\\d+)?") %>% 
+        str_remove("T")                               # Extract time point
+    ) %>%
+    select(FileName, Well_ID, Value, date, plate, timepoint)  # Select relevant columns
+  
+  # Store the processed data in the list
+  data_list[[file_name]] <- data_long
+}
+
+# Print an example of processed data
+head(data_list[[file_name]])
+
+
+# Combine all data frames into a single data frame (optional)
+combined_data <- bind_rows(data_list, .id = "Source")
+
+# Print the first few rows of the combined data (optional)
+head(combined_data)
+
+# Rename columns
+combined_data<-combined_data%>%
+  rename("well"=Well_ID, resazurin_counts=`Value`)%>%
+  mutate(timepoint=as.character(timepoint))
+
+head(combined_data)
+```
+
+Load in metadata. 
+
+```{r}
+metadata<-read_xlsx(path="taylor-shellfish-sept2025/data/metadata/taylor-shellfish-sept2025-metadata.xlsx")%>%
+  mutate(date=as.character(date))
+```
+
+Join with data frame and remove any wells that did not have samples. 
+
+```{r}
+str(combined_data)
+str(metadata)
+
+full_data<-left_join(combined_data, metadata, by=c("date", "well", "plate"))%>%
+  filter(!is.na(type))
+
+head(full_data)
+
+unique(full_data$date)
+```
+
+Load in size data. 
+
+```{r}
+size<-read_xlsx("taylor-shellfish-sept2025/data/size/taylor-shellfish-family-size.xlsx")
+
+#calculate mean size per family
+size<-size%>%
+  mutate(family=as.character(family))%>%
+  group_by(family)%>%
+  summarise(length.mm=mean(length.mm));size
+
+#list families 
+length(unique(levels(as.factor(size$family))))
+length(unique(levels(as.factor(full_data$family))))
+```
+
+Join with data. 
+
+```{r}
+str(full_data)
+str(size)
+
+full_data<-left_join(full_data, size, by=c("family"))
+head(full_data)
+
+full_data<-full_data%>%
+  select(!Source)%>%
+  select(!FileName)
+
+head(full_data)
+```
+
+Generate a list of families in the dataframe. 
+
+```{r}
+families<-full_data%>%
+  pull(family)%>%
+  unique()%>%
+  list();families
+```
+
+## Prep the data 
+
+Plot the raw data. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=resazurin_counts, colour=family, group=interaction(date, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Calculate T0 as the mean blank for each plate and add for each well. 
+
+```{r}
+str(full_data)
+
+# 1) mean of blanks per date+plate
+blank_means <- full_data %>%
+  filter(type == "blank") %>%
+  group_by(date, plate) %>%
+  summarize(blank_mean = mean(resazurin_counts, na.rm = TRUE), .groups = "drop")
+
+# 2) make one new row per (date, plate, well, family, type) that is NOT a blank
+t0_rows <- full_data %>%
+  distinct(date, plate, well, family, type, length.mm) %>%   # one per well on each plate
+  left_join(blank_means, by = c("date", "plate")) %>%
+  filter(!is.na(blank_mean)) %>%                   # drop plates without blanks
+  mutate(
+    timepoint = "0",
+    resazurin_counts = blank_mean,
+    Source   = str_c(date, "_", plate, "_T0"),
+    FileName = Source
+  ) %>%
+  select(names(full_data))  # keep column order identical to df
+
+# 3) append and (optionally) order rows
+full_data <- bind_rows(full_data, t0_rows) %>%
+  arrange(date, plate, well, timepoint)
+
+```
+
+View data again. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=resazurin_counts, colour=family, group=interaction(date, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Calculate normalized fluorescence at each time point normalized to the starting value at time 0. 
+```{r}
+full_data<-full_data%>%
+  group_by(date, plate, well, family)%>%
+  arrange(date, plate, well)%>%
+  mutate(fluorescence.norm=resazurin_counts/first(resazurin_counts))
+```
+
+Plot again. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.norm, colour=family, group=interaction(date, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+View blanks
+
+```{r}
+full_data%>%
+  filter(type=="blank")%>%
+  filter(fluorescence.norm<2.5)%>% #remove one outlier (likely accidentally had an oyster on 9/4)
+  ggplot(aes(x=timepoint, y=fluorescence.norm, group=interaction(date, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Calculate mean change in blank at each time point. 
+
+```{r}
+blanks<-full_data%>%
+  filter(type=="blank")%>%
+  filter(fluorescence.norm<2.5)%>%
+  group_by(date, plate, timepoint)%>%
+  summarise(mean_blank=mean(fluorescence.norm));blanks
+```
+
+View summarized blank data. 
+
+```{r}
+blanks%>%
+  ggplot(aes(x=timepoint, y=mean_blank))+
+  facet_wrap(~date*plate)+
+  geom_point()+
+  theme_classic()
+```
+
+Subtract blank values from fluorescence values for oysters. 
+
+```{r}
+full_data<-left_join(full_data, blanks)
+
+full_data<-full_data%>%
+  filter(!type=="blank")%>%
+  mutate(fluorescence.corr=fluorescence.norm-mean_blank)
+```
+
+Plot again. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr, colour=family, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Size normalize data.
+```{r}
+#normalize by length
+full_data<-full_data%>%
+  mutate(fluorescence.corr.mm=fluorescence.corr/length.mm)
+```
+
+Plot again. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr.mm, colour=family, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Remove unnecessary columns. 
+
+```{r}
+str(full_data)
+
+full_data<-full_data%>%
+  #select(!resazurin_counts)%>%
+  select(!type)%>%
+  select(!mean_blank)
+  #select(!length.mm)%>%
+  #select(!fluorescence.corr)%>%
+  #select(!fluorescence.norm)
+
+str(full_data)
+
+full_data<-full_data%>%
+  rename(value=fluorescence.corr.mm)
+```
+
+### Remove oversaturated samples
+
+Remove any sample that reached > 22000 raw value at any point during the trials, these were over saturated and data is unreliable. 
+
+```{r}
+hist(full_data$resazurin_counts)
+
+full_data%>%
+  filter(resazurin_counts>22000)%>%
+  group_by(date, plate, well)%>%
+  mutate(unique=paste(date, plate, well))
+
+#there are 42 samples that went above the threshold 
+
+list<-full_data%>%
+  filter(resazurin_counts>22000)%>%
+  group_by(date, plate, well)%>%
+  mutate(unique=paste(date, plate, well))%>%
+  pull(unique)%>%
+  unique()
+```
+
+Remove the samples that exceeded the threshold sometime during the trial. 
+
+```{r}
+full_data<-full_data%>%
+  mutate(unique=paste(date, plate, well))%>%
+  filter(!unique %in% list)
+```
+
+Ideal size range is in the middle range of what we used for these trials (1.8-4.7mm) 
+```{r}
+hist(full_data$length.mm)
+range(full_data$length.mm, na.rm=TRUE)
+```
+
+```{r}
+hist(full_data$value)
+```
+
+## Models and Plots - by family for full trial on 9/3
+
+```{r}
+first_data<-full_data%>%filter(date=="20250903")
+```
+
+Set order of families for analysis. 
+
+```{r}
+#levels_list<-c(2, 5, 6, 7, 12, 14, 15, 16, 19, 20, 21, 24, 25, 26, 31, 32, 33, 34, 36, 37, 38, 39, 41, 42, 43, 47, 48, 49, 50, 51, 54, 55, 57, 60, 61, 70, 71, 72, 74, 76, 77, 78, 79, 80, 82, 83, 84, 85, 88, 90)
+
+#full_data<-full_data%>%
+#  mutate(family=factor(family, levels=levels_list))
+```
+
+Plot individual data. 
+```{r}
+plot1<-first_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(date, family, plate, well)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic();plot1
+
+ggsave(plot1, filename="taylor-shellfish-sept2025/figures/individual_trajectories.png", width=10, height=8, units="in")
+```
+
+Remove oysters that were likely dead or not active (values <1000 in raw fluorescence)
+
+```{r}
+dim(first_data)
+
+first_data<-first_data%>%
+  group_by(unique) %>%
+  # keep groups where at least one timepoint is >= 1000 (remove those below 1000)
+  filter(any(resazurin_counts >= 1000)) %>%
+  ungroup()
+
+dim(first_data)
+```
+
+Run a model on metabolic rates for the full trial on 9/3. 
+
+```{r}
+model<-first_data%>%
+  lmer((value)^(1/3) ~ family * timepoint + (1|well:plate) + (1|plate), data=.)
+
+hist(first_data$value^(1/3))
+
+anova(model)
+#summary(model)
+qqPlot(residuals(model))
+leveneTest((value)^(1/3) ~ family * timepoint, data=full_data)
+```
+
+Plot raw data for each family. 
+
+```{r}
+plot2<-first_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(date, family)))+
+  facet_wrap(~family)+
+  geom_smooth(stat="smooth")+
+  theme_classic();plot2
+
+ggsave(plot2, filename="taylor-shellfish-sept2025/figures/family_trajectories.png", width=12, height=12, units="in")
+
+plot2d<-first_data%>%
+  ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(family)))+
+  facet_wrap(~date)+
+  geom_smooth(stat="smooth", method="lm", se=TRUE)+
+  theme_classic();plot2d
+
+ggsave(plot2d, filename="taylor-shellfish-sept2025/figures/family_trajectories2.png", width=8, height=8, units="in")
+```
+
+Plot model estimates for metabolic rates for each family. 
+
+```{r}
+#predict data 
+pred_data <- augment(model, first_data) %>%
+  mutate(predicted_value_family = (.fitted)^3)  # back-transform to original scale
+
+#plot
+plot2e<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color = family, group = family, fill = family)) +
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(
+    fun.data = mean_se,
+    geom = "ribbon",
+    alpha = 0.2,
+    color = NA
+  ) +
+  labs(
+    title = "A",
+    x = "Hours",
+    y = expression(paste("Fold Change in Fluorescence (mm" ^-1, ")"))
+  ) +
+  theme_classic() +
+  theme(legend.position="none")+
+  guides(fill = "none");plot2e  
+
+ggsave(plot2e, filename="taylor-shellfish-sept2025/figures/family_model_predictions.png", width=5, height=5, units="in")
+
+plot2f<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color = family, group = family, fill = family)) +
+  facet_wrap(~family, nrow=10, ncol=5)+
+  stat_summary(fun = mean, geom = "line", linewidth = 1) +
+  stat_summary(
+    fun.data = mean_se,
+    geom = "ribbon",
+    alpha = 0.2,
+    color = NA
+  ) +
+  labs(
+    title = "Model Predicted Metabolic Rate",
+    x = "Timepoint",
+    y = "Fluorescence"
+  ) +
+  theme_classic() +
+  guides(fill = "none");plot2f 
+
+ggsave(plot2f, filename="taylor-shellfish-sept2025/figures/family_model_predictions_panel.png", width=12, height=10, units="in")
+```
+
+### Area under the curve 
+
+Area under the curve (AUC): Summarizes total metabolic activity per oyster.
+
+```{r}
+aucs <- first_data %>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, plate, well, family) %>%
+  summarise(AUC = trapz(time, value))#%>%
+ #filter(AUC>0)
+
+hist(aucs$AUC)
+```
+
+```{r}
+plot10<-ggplot(aucs, aes(x = family, y = AUC, colour = family)) +
+  geom_violin(trim = FALSE) +
+  geom_jitter(width = 0.1, alpha = 0.3) +
+  labs(title = "AUC by Family", x = "Family", y = "AUC") +
+  theme_classic();plot10
+
+plot10a<-aucs%>%
+  group_by(family)%>%
+  summarise(mean=mean(AUC, na.rm=TRUE), se=(sd(AUC, na.rm=TRUE))/sqrt(length(AUC)))%>%
+  
+  ggplot(aes(x = reorder(family, mean), y = mean, colour = family)) +
+  geom_point()+
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se))+
+  labs(title = "", x = "Family", y = "AUC") +
+  theme_classic();plot10a
+
+ggsave(plot10a, filename="taylor-shellfish-sept2025/figures/auc_family.png", width=10, height=5, units="in")
+```
+
+Model the data. 
+
+```{r}
+hist(aucs$AUC)
+
+model<-lmer(sqrt(AUC) ~ family + (1|plate), data=aucs)
+
+anova(model)
+qqPlot(residuals(model))
+```
+
+### Repeatability (Intra-class Correlation)
+
+How similar are metabolic rates among oysters within the same family, compared to between families?
+
+Close to 0 = Most variation is within families; little family structure. Metabolic rate is more influenced by individual-level noise, environment, or measurement error.
+
+Moderate 0.3-0.5 = There's moderate consistency among family members. Families differ somewhat in metabolic rates.
+
+High 0.6-1.0 = 	Most variation is between families; oysters from the same family have very similar metabolic rates. This suggests strong genetic or shared environmental control.
+```{r}
+repeat_model <- rpt(value ~ timepoint + (1|family), grname = "family", data = first_data, datatype = "Gaussian")
+
+summary(repeat_model)
+```
+
+Repeatability (R) value is 0.159 here - most variation is within families with little family structure 
+
+## Rank based analysis of family performance comparing 9/3 and 9/4 
+
+```{r}
+plate_list<-c("plate1",  "plate10", "plate11", "plate12", "plate13", "plate14", "plate15", "plate16", "plate17", "plate18", "plate19", "plate2", "plate3", "plate4", "plate5", "plate6", "plate7", "plate8", "plate9")
+
+second_data<-full_data%>%
+  filter(plate %in% plate_list)%>%
+  mutate(unique=paste(plate, well))
+
+str(second_data)
+```
+
+### Did individual performance on the first day correlate with performance on the second day? 
+
+Rank based performance of AUC values for each oyster on day 1 and day 2 and conduct correlations of those ranks. 
+
+Calculate AUC for each individual on each day. 
+
+```{r}
+oyster_perf<-second_data %>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, plate, well, unique, family) %>%
+  summarise(AUC = trapz(time, value))%>%
+  ungroup()
+
+# Split into Day 1 and Day 2
+day1 <- oyster_perf %>% filter(date == "20250903") %>%
+  select(unique, family, perf_day1=AUC)
+
+day2 <- oyster_perf %>% filter(date == "20250904") %>%
+  select(unique, family, perf_day2=AUC)
+
+# Merge by individual
+oyster_compare <- inner_join(day1, day2, by = c("unique", "family"))
+```
+
+Run and plot a correlation. 
+```{r}
+cor.test(oyster_compare$perf_day1, oyster_compare$perf_day2, method = "spearman")
+```
+
+There is a significant and moderately positive (r=0.33) correlation. 
+
+```{r}
+oyster_compare %>%
+  mutate(rank_day1 = rank(-perf_day1),   # - to rank high values as 1
+         rank_day2 = rank(-perf_day2)) %>%
+  ggplot(aes(x = rank_day1, y = rank_day2)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1, linetype = "solid", color = "red", linewidth=1.5) + 
+    #geom_smooth(method = "lm", se = FALSE, color = "blue", linewidth=2) +
+  labs(x = "Rank Day 1", y = "Rank Day 2",
+       title = "Oyster Performance Consistency Across Days") +
+  theme_classic()
+```
+
+### Did family performance on the first day correlate with performance on the second day? 
+
+Rank based performance of AUC values for each oyster on day 1 and day 2 and conduct correlations of those ranks. 
+
+Calculate AUC for each family on each day. 
+
+```{r}
+oyster_perf<-second_data %>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, family) %>%
+  summarise(AUC = trapz(time, value))%>%
+  ungroup()
+
+# Split into Day 1 and Day 2
+day1 <- oyster_perf %>% filter(date == "20250903") %>%
+  select(family, perf_day1=AUC)
+
+day2 <- oyster_perf %>% filter(date == "20250904") %>%
+  select(family, perf_day2=AUC)
+
+# Merge by individual
+oyster_compare <- inner_join(day1, day2, by = c("family"))
+```
+
+Run and plot a correlation. 
+```{r}
+cor.test(oyster_compare$perf_day1, oyster_compare$perf_day2, method = "spearman")
+```
+
+No significant correlation.  
+
+```{r}
+oyster_compare %>%
+  mutate(rank_day1 = rank(-perf_day1),   # - to rank high values as 1
+         rank_day2 = rank(-perf_day2)) %>%
+  ggplot(aes(x = rank_day1, y = rank_day2)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1, linetype = "solid", color = "red", linewidth=1.5) +
+  labs(x = "Rank Day 1", y = "Rank Day 2",
+       title = "Oyster Performance Consistency Across Days") +
+  theme_classic()
+```
+
+No relationship between days. 
+
+## Output list of metrics 
+ 
+Day 1 Total slope
+Day 1 AUC 
+Day 2 Total slope 
+Day 2 AUC
+Day 1 vs 2 Total slope (% diff)
+Day 1 vs 2 AUC (% diff)
+Ratio day 1:day 2 slope
+Ratio day 1:day 2 AUC
+Day 1 & Day 2 mean slope
+Day 1 & Day 2 mean AUC
+Day 1 & Day 2 total AUC
+
+Create a data frame to populate. 
+```{r}
+metrics <- data.frame(
+  family = character(0),
+
+  day1_vs_day2_ratio_slope = numeric(0),
+  day1_vs_day2_ratio_auc = numeric(0)
+)
+```
+
+```{r}
+head(full_data)
+head(oyster_compare)
+```
+
+Add in AUC data from day 1 
+```{r}
+data1<-aucs%>%
+  group_by(family)%>%
+  summarise(day1_auc=mean(AUC))
+```
+
+Add in slope data from day 1
+```{r}
+# nest data 
+nested <- full_data %>%
+  filter(date=="20250903")%>%
+  group_by(unique, family) %>%
+  nest()
+
+nested$data[[1]]
+
+# group by oyster_id and phase, then fit a linear model of metabolic_rate ~ time
+data2 <- nested %>%
+  mutate(
+    model = map(data, ~ lm(value ~ as.numeric(timepoint), data = .x)),        # fit model
+    slope = map_dbl(model, ~ coef(.x)[["as.numeric(timepoint)"]])                      # extract slope
+  ) %>%
+  select(unique, family, slope)%>%
+  group_by(family)%>%
+  summarise(day1_slope=mean(slope))
+
+metrics<-left_join(data1, data2)
+```
+
+Add in day 2 AUC. 
+
+```{r}
+data3 <- full_data %>%
+  filter(date=="20250904")%>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, plate, well, family) %>%
+  summarise(AUC = trapz(time, value))%>%
+  group_by(family)%>%
+  summarise(day2_auc=mean(AUC))
+
+metrics<-left_join(metrics, data3)
+```
+
+Add in day 2 slopes. 
+
+```{r}
+# nest data 
+nested <- full_data %>%
+  filter(date=="20250904")%>%
+  group_by(unique, family) %>%
+  nest()
+
+nested$data[[1]]
+
+# group by oyster_id and phase, then fit a linear model of metabolic_rate ~ time
+data4 <- nested %>%
+  mutate(
+    model = map(data, ~ lm(value ~ as.numeric(timepoint), data = .x)),        # fit model
+    slope = map_dbl(model, ~ coef(.x)[["as.numeric(timepoint)"]])                      # extract slope
+  ) %>%
+  select(unique, family, slope)%>%
+  group_by(family)%>%
+  summarise(day2_slope=mean(slope))
+
+metrics<-left_join(metrics, data4)
+```
+
+Add in cumulative mean AUC. 
+
+```{r}
+data5 <- full_data %>%
+  mutate(time=as.numeric(timepoint))%>%
+  group_by(date, plate, well, family) %>%
+  summarise(AUC = trapz(time, value))%>%
+  group_by(family)%>%
+  summarise(cumulative_mean_auc=mean(AUC))
+
+metrics<-left_join(metrics, data5)
+```
+
+Add in cumulative mean slopes. 
+
+```{r}
+# nest data 
+nested <- full_data %>%
+  group_by(unique, date, family) %>%
+  nest()
+
+nested$data[[1]]
+
+# group by oyster_id and phase, then fit a linear model of metabolic_rate ~ time
+data6 <- nested %>%
+  mutate(
+    model = map(data, ~ lm(value ~ as.numeric(timepoint), data = .x)),        # fit model
+    slope = map_dbl(model, ~ coef(.x)[["as.numeric(timepoint)"]])                      # extract slope
+  ) %>%
+  select(unique, date, family, slope)%>%
+  group_by(family)%>%
+  summarise(cumulative_mean_slope=mean(slope))
+
+metrics<-left_join(metrics, data6)
+
+head(metrics)
+```
+
+Calculate percent change in slope and auc from day 1 to day 2. 
+
+```{r}
+metrics<-metrics%>%
+  mutate(day1_vs_day2_perc_change_slope = ((day2_slope-day1_slope)/day2_slope)*100)%>%
+  mutate(day1_vs_day2_perc_change_auc = ((day2_auc-day1_auc)/day2_auc)*100)
+```
+
+Calculate ratio between day 1 and day 2 slopes and auc (day1:day2). 
+
+```{r}
+metrics<-metrics%>%
+  mutate(day1_vs_day2_ratio_slope = (day1_slope/day2_slope))%>%
+  mutate(day1_vs_day2_ratio_auc = (day1_auc/day2_auc))
+```
+
+Output file. 
+
+```{r}
+metrics%>%
+  write_csv("taylor-shellfish-sept2025/output/taylor_screening_metrics.csv")
+```
+
+
+
+
+
+
+

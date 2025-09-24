@@ -1,5 +1,5 @@
 ---
-title: Taylor Shellfish Sept 2025 resazurin family screening  
+title: Taylor Shellfish Sept 2025 resazurin family screening - individual size normalization
 author: "AS Huffmyer"
 date: '2025'
 output:
@@ -14,7 +14,7 @@ editor_options:
   chunk_output_type: console
 ---
 
-This script analyzes resazurin assays on Taylor Shellfish seed.  
+This script analyzes resazurin assays on Taylor Shellfish seed. This script uses individual size normalization.  
 
 # Set up 
 
@@ -144,17 +144,8 @@ unique(full_data$date)
 Load in size data. 
 
 ```{r}
-size<-read_xlsx("taylor-shellfish-sept2025/data/size/taylor-shellfish-family-size.xlsx")
-
-#calculate mean size per family
-size<-size%>%
-  mutate(family=as.character(family))%>%
-  group_by(family)%>%
-  summarise(length.mm=mean(length.mm));size
-
-#list families 
-length(unique(levels(as.factor(size$family))))
-length(unique(levels(as.factor(full_data$family))))
+size<-read_xlsx("taylor-shellfish-sept2025/data/size/taylor-shellfish-individual-size.xlsx")%>%select(!notes)
+head(size)
 ```
 
 Join with data. 
@@ -163,7 +154,7 @@ Join with data.
 str(full_data)
 str(size)
 
-full_data<-left_join(full_data, size, by=c("family"))
+full_data<-left_join(full_data, size, by=c("plate", "well"))
 head(full_data)
 
 full_data<-full_data%>%
@@ -208,7 +199,7 @@ blank_means <- full_data %>%
 
 # 2) make one new row per (date, plate, well, family, type) that is NOT a blank
 t0_rows <- full_data %>%
-  distinct(date, plate, well, family, type, length.mm) %>%   # one per well on each plate
+  distinct(date, plate, well, family, type, number_oysters, length.mm) %>%   # one per well on each plate
   left_join(blank_means, by = c("date", "plate")) %>%
   filter(!is.na(blank_mean)) %>%                   # drop plates without blanks
   mutate(
@@ -313,7 +304,52 @@ Size normalize data.
 ```{r}
 #normalize by length
 full_data<-full_data%>%
+  mutate(length.mm=as.numeric(length.mm))%>%
   mutate(fluorescence.corr.mm=fluorescence.corr/length.mm)
+```
+
+Plot again. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr.mm, colour=family, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Filter to remove any well that did not have 1 single oyster. Only analyze those that we are confident have one oyster in them. 
+
+```{r}
+#how many observations before? 
+length(full_data$resazurin_counts)
+
+full_data<-full_data%>%
+  filter(number_oysters==1)%>%
+  select(!number_oysters)
+
+#how many observations after? 
+length(full_data$resazurin_counts)
+
+#reduced from 19000+ to 17000+ observations, proceed with this filtering 
+```
+
+Plot again. 
+
+```{r}
+full_data%>%
+  ggplot(aes(x=timepoint, y=fluorescence.corr.mm, colour=family, group=interaction(date, well, plate)))+
+  facet_wrap(~date)+
+  geom_point()+
+  geom_line()+
+  theme_classic()
+```
+
+Remove values that are below zero. 
+```{r}
+full_data<-full_data%>%
+  filter(!fluorescence.corr.mm<0)
 ```
 
 Plot again. 
@@ -358,7 +394,7 @@ full_data%>%
   group_by(date, plate, well)%>%
   mutate(unique=paste(date, plate, well))
 
-#there are 42 samples that went above the threshold 
+#there are 36 samples that went above the threshold 
 
 list<-full_data%>%
   filter(resazurin_counts>22000)%>%
@@ -392,15 +428,6 @@ hist(full_data$value)
 first_data<-full_data%>%filter(date=="20250903")
 ```
 
-Set order of families for analysis. 
-
-```{r}
-#levels_list<-c(2, 5, 6, 7, 12, 14, 15, 16, 19, 20, 21, 24, 25, 26, 31, 32, 33, 34, 36, 37, 38, 39, 41, 42, 43, 47, 48, 49, 50, 51, 54, 55, 57, 60, 61, 70, 71, 72, 74, 76, 77, 78, 79, 80, 82, 83, 84, 85, 88, 90)
-
-#full_data<-full_data%>%
-#  mutate(family=factor(family, levels=levels_list))
-```
-
 Plot individual data. 
 ```{r}
 plot1<-first_data%>%
@@ -410,7 +437,7 @@ plot1<-first_data%>%
   geom_line()+
   theme_classic();plot1
 
-ggsave(plot1, filename="taylor-shellfish-sept2025/figures/individual_trajectories.png", width=10, height=8, units="in")
+ggsave(plot1, filename="taylor-shellfish-sept2025/figures/individual_trajectories_individual-normalized.png", width=10, height=8, units="in")
 ```
 
 Remove oysters that were likely dead or not active (values <1000 in raw fluorescence)
@@ -450,7 +477,7 @@ plot2<-first_data%>%
   geom_smooth(stat="smooth")+
   theme_classic();plot2
 
-ggsave(plot2, filename="taylor-shellfish-sept2025/figures/family_trajectories.png", width=12, height=12, units="in")
+ggsave(plot2, filename="taylor-shellfish-sept2025/figures/family_trajectories_individual-normalized.png", width=12, height=12, units="in")
 
 plot2d<-first_data%>%
   ggplot(aes(x=timepoint, y=value, colour=family, group=interaction(family)))+
@@ -458,7 +485,7 @@ plot2d<-first_data%>%
   geom_smooth(stat="smooth", method="lm", se=TRUE)+
   theme_classic();plot2d
 
-ggsave(plot2d, filename="taylor-shellfish-sept2025/figures/family_trajectories2.png", width=8, height=8, units="in")
+ggsave(plot2d, filename="taylor-shellfish-sept2025/figures/family_trajectories2_individual-normalized.png", width=8, height=8, units="in")
 ```
 
 Plot model estimates for metabolic rates for each family. 
@@ -486,7 +513,7 @@ plot2e<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color =
   theme(legend.position="none")+
   guides(fill = "none");plot2e  
 
-ggsave(plot2e, filename="taylor-shellfish-sept2025/figures/family_model_predictions.png", width=5, height=5, units="in")
+ggsave(plot2e, filename="taylor-shellfish-sept2025/figures/family_model_predictions_individual-normalized.png", width=5, height=5, units="in")
 
 plot2f<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color = family, group = family, fill = family)) +
   facet_wrap(~family, nrow=10, ncol=5)+
@@ -505,7 +532,7 @@ plot2f<-ggplot(pred_data, aes(x = timepoint, y = predicted_value_family, color =
   theme_classic() +
   guides(fill = "none");plot2f 
 
-ggsave(plot2f, filename="taylor-shellfish-sept2025/figures/family_model_predictions_panel.png", width=12, height=10, units="in")
+ggsave(plot2f, filename="taylor-shellfish-sept2025/figures/family_model_predictions_panel_individual-normalized.png", width=12, height=10, units="in")
 ```
 
 ### Area under the curve 
@@ -539,7 +566,7 @@ plot10a<-aucs%>%
   labs(title = "", x = "Family", y = "AUC") +
   theme_classic();plot10a
 
-ggsave(plot10a, filename="taylor-shellfish-sept2025/figures/auc_family.png", width=10, height=5, units="in")
+ggsave(plot10a, filename="taylor-shellfish-sept2025/figures/auc_family_individual-normalized.png", width=10, height=5, units="in")
 ```
 
 Model the data. 
@@ -568,7 +595,7 @@ repeat_model <- rpt(value ~ timepoint + (1|family), grname = "family", data = fi
 summary(repeat_model)
 ```
 
-Repeatability (R) value is 0.159 here - most variation is within families with little family structure 
+Repeatability (R) value is 0.099 here - most variation is within families with little family structure 
 
 ## Rank based analysis of family performance comparing 9/3 and 9/4 
 
@@ -611,7 +638,7 @@ Run and plot a correlation.
 cor.test(oyster_compare$perf_day1, oyster_compare$perf_day2, method = "spearman")
 ```
 
-There is a significant and moderately positive (r=0.33) correlation. 
+There is a significant and moderately positive (r=0.25) correlation. 
 
 ```{r}
 oyster_compare %>%
@@ -826,7 +853,7 @@ Output file.
 
 ```{r}
 metrics%>%
-  write_csv("taylor-shellfish-sept2025/output/taylor_screening_metrics.csv")
+  write_csv("taylor-shellfish-sept2025/output/taylor_screening_metrics_individual-normalized.csv")
 ```
 
 
