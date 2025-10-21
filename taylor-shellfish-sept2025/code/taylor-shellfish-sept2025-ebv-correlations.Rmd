@@ -1,0 +1,308 @@
+---
+title: Taylor Shellfish Sept 2025 EBV correlations
+author: "AS Huffmyer"
+date: '2025'
+output:
+  github_document: null
+  md_document: default
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 6
+    toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+
+This script conducts correlations between EBV values and resazurin metrics from individual size normalization.  
+
+# Set up 
+
+Set up workspace, set options, and load required packages.    
+```{r}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+Load libraries. 
+```{r}
+library(MASS) 
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(cowplot)
+library(lme4)
+library(lmerTest)
+library(car)
+library(effects)
+library(emmeans)
+library(tools)
+library(pracma)
+library(rptR)
+library(fda)
+library(nls2)
+library(purrr)
+library(broom)
+library(pheatmap)
+library(vegan)
+library(ggridges)
+library(ggpubr)
+library(broom.mixed)
+```
+
+# Load data 
+
+```{r}
+ebv<-read_xlsx(path="taylor-shellfish-sept2025/data/ebv/TAY_EBV_Report.xlsx")%>%select(FAM_ID, HI, MYW, POMS, SUR, SUR_LIVE, WI, WTT, WTT_SEL)%>%mutate(family = str_extract(FAM_ID, "\\d{2}$"))
+head(ebv)
+fams1<-c(ebv$family)
+```
+
+HI=shell height index family value
+MYW=meat yield family value
+POMS=lab survival after OsHV-1 challenge family value
+SUR=field survival family value
+SUR_LIVE=survival, live individual value
+WI=shell width family value
+WTT=Wet weight family value
+WTT_SEL=Wet weight individual value
+
+Load in resazurin data
+```{r}
+index<-read_csv("taylor-shellfish-sept2025/output/taylor_screening_metrics_individual-normalized.csv")%>%mutate(family=as.character(family))
+head(index)
+
+fams2<-c(index$family)
+```
+
+Check family list
+```{r}
+setdiff(fams1, fams2)
+setdiff(fams2, fams1)
+intersect(fams1, fams2)
+```
+
+Both are the same. We have 38 families total. 
+
+Merge datasets.
+
+```{r}
+data<-left_join(ebv, index)%>%select(family, everything())%>%select(!FAM_ID)
+```
+
+# Correlation between performance and resazurin metrics 
+
+Make a list of resazurin metrics. 
+```{r}
+list<-colnames(data[10:19])
+```
+
+## HI: shell height index family value
+
+```{r}
+data%>%
+  select(HI, all_of(list))%>%
+  pivot_longer(-HI, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarize(
+    cor = cor(HI, value, use = "pairwise.complete.obs"),
+    p_value = cor.test(HI, value)$p.value
+  )
+```
+
+No significant correlations. 
+
+## MYW: meat yield family value
+
+```{r}
+data%>%
+  select(MYW, all_of(list))%>%
+  pivot_longer(-MYW, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarize(
+    cor = cor(MYW, value, use = "pairwise.complete.obs"),
+    p_value = cor.test(MYW, value)$p.value
+  )
+```
+
+No significant correlations. 
+
+## POMS: lab survival after OsHV-1 challenge family value
+
+```{r}
+data%>%
+  select(POMS, all_of(list))%>%
+  filter(!is.na(POMS))%>%
+  pivot_longer(-POMS, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarize(
+    cor = cor(POMS, value, use = "pairwise.complete.obs"),
+    p_value = cor.test(POMS, value)$p.value
+  )
+```
+
+No significant correlations. 
+
+## SUR: field survival family value
+
+```{r}
+data%>%
+  select(SUR, all_of(list))%>%
+  pivot_longer(-SUR, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarize(
+    cor = cor(SUR, value, use = "pairwise.complete.obs"),
+    p_value = cor.test(SUR, value)$p.value
+  )
+```
+
+No significant correlations. 
+
+## SUR_LIVE: survival, live individual value
+
+```{r}
+data%>%
+  select(SUR_LIVE, all_of(list))%>%
+  pivot_longer(-SUR_LIVE, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarize(
+    cor = cor(SUR_LIVE, value, use = "pairwise.complete.obs"),
+    p_value = cor.test(SUR_LIVE, value)$p.value
+  )
+```
+
+No significant correlations. 
+
+## WI: shell width family value
+
+```{r}
+cor_results<-data%>%
+  select(WI, all_of(list))%>%
+  pivot_longer(-WI, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarize(
+    cor = cor(WI, value, use = "pairwise.complete.obs"),
+    p_value = cor.test(WI, value)$p.value
+  );cor_results
+```
+
+There are significant correlations with variation in response between days (repeat stressors). Plot these. 
+
+```{r}
+sig_vars <- cor_results %>%
+  filter(p_value < 0.05) %>%
+  pull(variable)
+
+data %>%
+  select(HI, all_of(sig_vars)) %>%
+  pivot_longer(-HI, names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = HI, y = value)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme_classic(base_size = 14) +
+  labs(
+    x = "HI",
+    y = "Variable Value",
+    title = "Significant correlations with HI (p < 0.05)"
+  )
+```
+
+The trends are not clear, very weak. 
+
+## WTT: Wet weight family value
+
+```{r}
+data%>%
+  select(WTT, all_of(list))%>%
+  pivot_longer(-WTT, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarize(
+    cor = cor(WTT, value, use = "pairwise.complete.obs"),
+    p_value = cor.test(WTT, value)$p.value
+  )
+```
+
+No significant correlations. 
+
+## WTT_SEL=Wet weight individual value
+
+```{r}
+data%>%
+  select(WTT_SEL, all_of(list))%>%
+  pivot_longer(-WTT_SEL, names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  summarize(
+    cor = cor(WTT_SEL, value, use = "pairwise.complete.obs"),
+    p_value = cor.test(WTT_SEL, value)$p.value
+  )
+```
+
+No significant correlations. 
+
+# View all correlations together 
+
+```{r}
+ebv_list<-c(colnames(data[2:9]))
+```
+
+```{r}
+# Select the relevant columns
+df <- data %>%
+  select(all_of(c(list, ebv_list)))
+
+# Compute correlation matrix (for plotting color scale)
+cor_mat <- cor(df, use = "pairwise.complete.obs")
+
+# Compute p-values for each pair (list × ebv_list)
+p_mat <- matrix(NA, nrow = length(list), ncol = length(ebv_list),
+                dimnames = list(list, ebv_list))
+
+for (i in list) {
+  for (j in ebv_list) {
+    test <- cor.test(df[[i]], df[[j]], use = "pairwise.complete.obs")
+    p_mat[i, j] <- test$p.value
+  }
+}
+
+# Extract only cross correlations
+cross_cor <- cor_mat[list, ebv_list, drop = FALSE]
+cross_p <- p_mat[list, ebv_list, drop = FALSE]
+
+# Convert to tidy (long) format for ggplot
+cross_cor_long <- as.data.frame(cross_cor) %>%
+  rownames_to_column(var = "resazurin_var") %>%
+  pivot_longer(-resazurin_var, names_to = "ebv_var", values_to = "correlation")
+
+cross_p_long <- as.data.frame(cross_p) %>%
+  rownames_to_column(var = "resazurin_var") %>%
+  pivot_longer(-resazurin_var, names_to = "ebv_var", values_to = "p_value")
+
+# Join correlation + p-value data frames
+cross_long <- left_join(cross_cor_long, cross_p_long,
+                        by = c("resazurin_var", "ebv_var"))
+
+# Plot heatmap with p-values overlaid
+plot1<-ggplot(cross_long, aes(x = ebv_var, y = resazurin_var, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = paste0("p=", round(p_value, 2))), size = 3) +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    midpoint = 0, limits = c(-1, 1),
+    name = "Pearson r"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    x = "EBV variables",
+    y = "Resazurin variables",
+    title = "Cross-correlation heatmap (List × EBV, p-values labeled)"
+  );plot1
+
+ggsave(plot1, filename="taylor-shellfish-sept2025/figures/ebv-metrics-correlation-heatmap.png", width=10, height=6)
+```
+
+No significant correlations. 
+
